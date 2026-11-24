@@ -1,0 +1,55 @@
+services:
+  # =========================================================================
+  # 1. Approval Web Portal & Video Review Service
+  # =========================================================================
+  approval-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-shorts-approval
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - TIMEZONE=Asia/Kolkata
+      - APPROVAL_BASE_URL=${APPROVAL_BASE_URL:-http://localhost:8000}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # If you have client_secret.json or token.json, you can uncomment these lines:
+      # - ./client_secret.json:/app/client_secret.json:ro
+      # - ./token.json:/app/token.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # =========================================================================
+  # 2. Daily APScheduler Background Service (07:00 & 16:30 IST)
+  # =========================================================================
+  scheduler-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-shorts-scheduler
+    command: ["schedule"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - TIMEZONE=Asia/Kolkata
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      approval-service:
+        condition: service_healthy

@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Python virtual environment & cache
+.venv
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local sensitive files (Mounted at runtime via volumes if needed)
+client_secret.json
+token.json
+*.pem
+*.key
+
+# Local dynamic data (Mounted via docker-compose volumes)
+data/packages/*
+!data/packages/.gitkeep
+data/flow_exports/*
+!data/flow_exports/.gitkeep
+data/final/*
+!data/final/.gitkeep
+data/*.json
+logs/
+*.log
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
