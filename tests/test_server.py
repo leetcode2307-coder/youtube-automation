@@ -86,7 +86,7 @@ def test_approval_workflow_and_replay_protection(test_package):
     # 2. GET /review/{run_id}?token=... (Review portal render, NO upload)
     res_portal = client.get(f"/review/{run_id}?token={raw_token}")
     assert res_portal.status_code == 200
-    assert "AI Engineering Shorts Review Gate" in res_portal.text
+    assert "Review & Approval Gate" in res_portal.text
     assert test_package.metadata.title in res_portal.text
     # Ensure GET did NOT change status to approved
     pkg_check = storage.load_package(run_id)
@@ -129,7 +129,7 @@ def test_dashboard_ui_and_api(test_package):
     # Test dashboard HTML render
     res_dash = client.get("/")
     assert res_dash.status_code == 200
-    assert "AI Engineering Shorts - Control Portal" in res_dash.text
+    assert "AI Engineering Shorts Studio" in res_dash.text
     assert test_package.run_id in res_dash.text
 
     # Test JSON status API
