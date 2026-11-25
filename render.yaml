@@ -3,6 +3,8 @@ services:
     name: ai-shorts-automation
     runtime: docker
     dockerfilePath: ./Dockerfile
+    branch: main
+    autoDeployTrigger: commit
     plan: free
     healthCheckPath: /health
     envVars:
