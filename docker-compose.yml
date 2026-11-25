@@ -17,6 +17,7 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
       - TIMEZONE=Asia/Kolkata
+      - ENABLE_EMBEDDED_SCHEDULER=false
       - APPROVAL_BASE_URL=${APPROVAL_BASE_URL:-http://localhost:8000}
     volumes:
       - ./data:/app/data

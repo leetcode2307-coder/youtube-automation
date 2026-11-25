@@ -38,9 +38,9 @@ RUN mkdir -p data/packages data/flow_exports data/final data/logs logs
 
 EXPOSE 8000
 
-# Health check using FastAPI /health endpoint
+# Health check using FastAPI /health endpoint (honors Render's $PORT)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD sh -c 'curl -f http://localhost:${PORT:-8000}/health || exit 1'
 
 ENTRYPOINT ["python", "cli.py"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["serve", "--host", "0.0.0.0"]

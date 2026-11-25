@@ -32,31 +32,33 @@ def create_scheduler() -> BackgroundScheduler:
 
     scheduler = BackgroundScheduler(timezone=tz)
 
-    # 1. Morning Job: 07:00 AM IST
+    # 1. Morning Job (defaults to 07:00 AM IST)
     scheduler.add_job(
         scheduled_job_runner,
-        CronTrigger(hour=7, minute=0, timezone=tz),
+        CronTrigger.from_crontab(settings.MORNING_CRON, timezone=tz),
         id="morning_shorts_job",
-        name="Morning AI Engineering Short (07:00 IST)",
+        name=f"Morning AI Engineering Short ({settings.MORNING_CRON})",
         args=["morning"],
         max_instances=1,
         coalesce=True,
     )
 
-    # 2. Evening Job: 04:30 PM (16:30) IST
+    # 2. Evening Job (defaults to 04:30 PM / 16:30 IST)
     scheduler.add_job(
         scheduled_job_runner,
-        CronTrigger(hour=16, minute=30, timezone=tz),
+        CronTrigger.from_crontab(settings.EVENING_CRON, timezone=tz),
         id="evening_shorts_job",
-        name="Evening AI Engineering Short (16:30 IST)",
+        name=f"Evening AI Engineering Short ({settings.EVENING_CRON})",
         args=["evening"],
         max_instances=1,
         coalesce=True,
     )
 
     logger.info(
-        "Configured APScheduler with 2 daily jobs (07:00 & 16:30 %s)",
-        settings.TIMEZONE
+        "Configured APScheduler with 2 daily jobs (morning='%s', evening='%s', tz='%s')",
+        settings.MORNING_CRON,
+        settings.EVENING_CRON,
+        settings.TIMEZONE,
     )
     return scheduler
 

@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -7,10 +8,11 @@ from app.assemble import assemble_video
 from app.config import settings
 from app.logging_config import logger
 from app.pipeline import run_content_pipeline
-from app.scheduler import create_scheduler, start_scheduler_forever
+from app.scheduler import start_scheduler_forever
 from app.server import app as fastapi_app
 from app.storage import storage
 from app.tts import generate_speech_sync
+from app.youtube import authorize_youtube_interactive
 
 
 def cmd_generate(args):
@@ -45,7 +47,6 @@ def cmd_assemble(args):
 
 def cmd_notify(args):
     """Generate approval token and send review email."""
-    import requests
     print(f"\n[3/3] Sending approval request for Run ID: {args.run_id}...")
     from app.emailer import create_approval_record, send_approval_email
     pkg = storage.load_package(args.run_id)
@@ -53,8 +54,14 @@ def cmd_notify(args):
         print(f"ERROR: Run ID {args.run_id} not found in packages.", file=sys.stderr)
         sys.exit(1)
 
+    final_mp4 = settings.FINAL_OUTPUT_DIR / args.run_id / "final_short.mp4"
+    if not final_mp4.exists():
+        print(f"ERROR: Final video not found at {final_mp4}. Run 'assemble' first.", file=sys.stderr)
+        sys.exit(1)
+
     raw_token, record = create_approval_record(args.run_id)
     send_approval_email(pkg, raw_token)
+    storage.update_package_status(args.run_id, "awaiting_approval")
     review_url = f"{settings.APPROVAL_BASE_URL.rstrip('/')}/review/{args.run_id}?token={raw_token}"
     print(f"\nSUCCESS! Review Link Generated:")
     print(f"  Review URL: {review_url}")
@@ -65,8 +72,22 @@ def cmd_notify(args):
 
 def cmd_serve(args):
     """Run FastAPI approval web service."""
-    print(f"\nStarting Approval Portal at http://{args.host}:{args.port}...")
-    uvicorn.run(fastapi_app, host=args.host, port=args.port, log_level="info")
+    host = args.host
+    port = args.port
+    print(f"\nStarting Approval Portal at http://{host}:{port}...")
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+
+
+def cmd_youtube_auth(args):
+    """Authorize YouTube Data API v3 OAuth interactively to generate token.json."""
+    print("\nStarting YouTube OAuth browser authorization...")
+    try:
+        token_path = authorize_youtube_interactive()
+        print(f"\nSUCCESS! YouTube OAuth token saved to: {token_path}")
+        print("For Render deployment, add this file as a Secret File or set YOUTUBE_TOKEN_JSON.")
+    except Exception as e:
+        print(f"\nERROR: YouTube OAuth failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_schedule(args):
@@ -142,8 +163,17 @@ def main():
     # serve
     p_srv = subparsers.add_parser("serve", help="Run FastAPI approval web server")
     p_srv.add_argument("--host", default=settings.SERVER_HOST, help="Host to bind")
-    p_srv.add_argument("--port", type=int, default=settings.SERVER_PORT, help="Port to bind")
+    p_srv.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", settings.SERVER_PORT)),
+        help="Port to bind",
+    )
     p_srv.set_defaults(func=cmd_serve)
+
+    # youtube-auth
+    p_yt = subparsers.add_parser("youtube-auth", help="Authorize YouTube OAuth interactively and save token.json")
+    p_yt.set_defaults(func=cmd_youtube_auth)
 
     # schedule
     p_sch = subparsers.add_parser("schedule", help="Start APScheduler daily background service")

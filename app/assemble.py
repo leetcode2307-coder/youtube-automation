@@ -1,12 +1,12 @@
 import hashlib
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from app.config import settings
 from app.intake import validate_flow_assets
 from app.logging_config import logger
-from app.media_validator import validate_final_media
+from app.media_validator import get_media_info, validate_final_media
 from app.storage import storage
 from app.tts import generate_speech_sync
 
@@ -18,6 +18,15 @@ def calculate_sha256(file_path: Path) -> str:
         for byte_block in iter(lambda: f.read(65536), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+def _probe_duration(media_path: Path) -> float:
+    """Return media duration in seconds via ffprobe, or 0.0 if probing fails."""
+    try:
+        info = get_media_info(media_path)
+        return float(info.get("format", {}).get("duration", 0.0))
+    except Exception:
+        return 0.0
 
 
 def assemble_video(run_id: str) -> Path:
@@ -49,46 +58,67 @@ def assemble_video(run_id: str) -> Path:
 
     if not voiceover_path.exists():
         logger.info("Voiceover file not found in %s; generating with Edge-TTS...", run_export_dir)
-        generate_speech_sync(package.narration_full, voiceover_path, srt_path)
+        try:
+            generate_speech_sync(package.narration_full, voiceover_path, srt_path)
+        except Exception as e:
+            error_msg = f"TTS voiceover generation failed: {e}"
+            storage.update_package_status(run_id, "failed", error_msg)
+            raise RuntimeError(error_msg) from e
 
-    # 3. Create FFmpeg concat input file
-    concat_file = run_export_dir / "concat_list.txt"
-    with open(concat_file, "w", encoding="utf-8") as f:
-        for clip in sorted_clips:
-            # Use forward slashes for FFmpeg compatibility on Windows
-            clip_posix = clip.resolve().as_posix()
-            f.write(f"file '{clip_posix}'\n")
+    if srt_path.exists():
+        shutil.copy2(srt_path, final_run_dir / "captions.srt")
 
-    # 4. Build video filter for 1080x1920 9:16 portrait standardization
-    vf_filters = [
-        "scale=1080:1920:force_original_aspect_ratio=decrease",
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-        "setsar=1",
-        "fps=30"
-    ]
-    vf_string = ",".join(vf_filters)
+    # 3. Probe clip and voiceover durations so audio never truncates or gets replaced by silent clip audio
+    total_video_duration = sum(_probe_duration(clip) for clip in sorted_clips)
+    audio_duration = _probe_duration(voiceover_path)
+    pad_extra = 0.0
+    if audio_duration > total_video_duration > 0 and total_video_duration < 45.0:
+        pad_extra = min(audio_duration - total_video_duration, 45.0 - total_video_duration)
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_file),
-        "-i", str(voiceover_path),
-        "-vf", vf_string,
+    # 4. Build filter_complex to normalize heterogeneous clips to 1080x1920 30fps
+    #    and map the voiceover track explicitly with trailing silence padding.
+    cmd = ["ffmpeg", "-y"]
+    filter_parts = []
+    for idx, clip in enumerate(sorted_clips):
+        cmd.extend(["-i", str(clip)])
+        filter_parts.append(
+            f"[{idx}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,setpts=PTS-STARTPTS[v{idx}]"
+        )
+
+    audio_idx = len(sorted_clips)
+    cmd.extend(["-i", str(voiceover_path)])
+
+    concat_inputs = "".join(f"[v{i}]" for i in range(len(sorted_clips)))
+    if pad_extra > 0.1:
+        filter_parts.append(f"{concat_inputs}concat=n={len(sorted_clips)}:v=1:a=0[vconcat]")
+        filter_parts.append(f"[vconcat]tpad=stop_mode=clone:stop_duration={pad_extra:.2f}[vout]")
+    else:
+        filter_parts.append(f"{concat_inputs}concat=n={len(sorted_clips)}:v=1:a=0[vout]")
+
+    filter_parts.append(
+        f"[{audio_idx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,apad[aout]"
+    )
+
+    cmd.extend([
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[vout]",
+        "-map", "[aout]",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "20",
+        "-threads", str(settings.FFMPEG_THREADS),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
         "-shortest",
-        str(final_mp4_path)
-    ]
+        "-movflags", "+faststart",
+        str(final_mp4_path),
+    ])
 
     logger.info("Running FFmpeg assembly command for run %s...", run_id)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
         logger.error("FFmpeg assembly failed: %s\nStderr: %s", e, e.stderr)
         storage.update_package_status(run_id, "failed", f"FFmpeg failed: {e.stderr[:200]}")

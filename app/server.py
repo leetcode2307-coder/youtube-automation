@@ -1,25 +1,66 @@
+from contextlib import asynccontextmanager
 import hashlib
+import html as html_lib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
 from app.assemble import assemble_video
 from app.config import settings
 from app.emailer import create_approval_record, send_approval_email
+from app.intake import extract_scene_number
 from app.logging_config import logger
-from app.models import ApprovalRecord, ProductionPackage, SlotType
+from app.models import ApprovalRecord, SlotType
 from app.pipeline import run_content_pipeline
+from app.scheduler import create_scheduler
 from app.storage import storage
 
-app = FastAPI(title="AI Engineering YouTube Shorts Studio & Review Portal", version="1.0.0")
+_SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,80}$")
+
+
+def _validate_run_id(run_id: str) -> str:
+    if not _SAFE_RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id format.")
+    return run_id
+
+
+def _resolve_base_url(request: Optional[Request] = None) -> str:
+    base = settings.APPROVAL_BASE_URL.rstrip("/")
+    if request and base in ("http://127.0.0.1:8000", "http://localhost:8000", ""):
+        return str(request.base_url).rstrip("/")
+    return base
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    scheduler = None
+    if settings.ENABLE_EMBEDDED_SCHEDULER:
+        scheduler = create_scheduler()
+        scheduler.start()
+        logger.info("Embedded APScheduler started inside FastAPI web service.")
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+            logger.info("Embedded APScheduler stopped.")
+
+
+app = FastAPI(
+    title="AI Engineering YouTube Shorts Studio & Review Portal",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 
 def verify_token(run_id: str, raw_token: str) -> ApprovalRecord:
     """Validate that the token matches the stored hash, is unexpired, and unconsumed."""
+    _validate_run_id(run_id)
     token_hash = hashlib.sha256(raw_token.strip().encode("utf-8")).hexdigest()
     record = storage.get_approval_by_token_hash(token_hash)
 
@@ -36,6 +77,8 @@ def verify_token(run_id: str, raw_token: str) -> ApprovalRecord:
 
     now_utc = datetime.now(timezone.utc)
     expires_at = datetime.fromisoformat(record.expires_at_utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     if now_utc > expires_at:
         logger.warning("Expired token attempt for run %s (expired at %s)", run_id, record.expires_at_utc)
         raise HTTPException(status_code=410, detail="This approval token has expired. Please request a new review link.")
@@ -45,7 +88,12 @@ def verify_token(run_id: str, raw_token: str) -> ApprovalRecord:
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "embedded_scheduler": settings.ENABLE_EMBEDDED_SCHEDULER,
+        "timezone": settings.TIMEZONE,
+    }
 
 
 # =====================================================================
@@ -98,18 +146,44 @@ def dashboard_view():
             else:
                 return "step-pending"
 
-        # Check if video exists
+        # Check if video and scene clips exist
+        run_export_dir = settings.FLOW_EXPORTS_DIR / p.run_id
+        existing_clips = {
+            extract_scene_number(f.name)
+            for f in (run_export_dir.glob("*.mp4") if run_export_dir.exists() else [])
+            if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
+        }
+        has_custom_vo = (run_export_dir / "voiceover.mp3").exists()
+
         video_exists = (settings.FINAL_OUTPUT_DIR / p.run_id / "final_short.mp4").exists()
-        watch_btn = f"""<a href="/video/{p.run_id}" target="_blank" class="btn-action btn-watch">
+        watch_btn = f"""<a href="/video/{html_lib.escape(p.run_id, quote=True)}" target="_blank" class="btn-action btn-watch">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             Watch MP4 (1080x1920)
         </a>""" if video_exists else ""
 
-        # Scene pills
+        retry_upload_btn = f"""<button onclick="retryUpload('{html_lib.escape(p.run_id, quote=True)}')" class="btn-action btn-watch">
+            Retry YouTube Upload
+        </button>""" if p.status == "approved" else ""
+
+        error_banner = (
+            f"""<div style="margin-top:12px; padding:10px 14px; border-radius:8px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); color:#fca5a5; font-size:12px;">
+              <b>Error:</b> {html_lib.escape(p.error_message)}
+            </div>"""
+            if p.error_message and p.status == "failed"
+            else ""
+        )
+
+        # Scene pills (highlight uploaded clips in green)
         scenes_preview = "".join(
-            f"<span class='scene-chip' title='{s.narration}'>Scene {s.scene_number} ({s.duration_seconds}s)</span>"
+            f"<span class='scene-chip' style='{'border-color:rgba(16,185,129,0.5);color:#34d399;background:rgba(16,185,129,0.1);' if s.scene_number in existing_clips else ''}' title='{html_lib.escape(s.narration, quote=True)}'>"
+            f"{'✓ ' if s.scene_number in existing_clips else ''}Scene {s.scene_number} ({s.duration_seconds}s)</span>"
             for s in p.scenes
         )
+        if has_custom_vo:
+            scenes_preview += "<span class='scene-chip' style='border-color:rgba(16,185,129,0.5);color:#34d399;'>✓ voiceover.mp3</span>"
+
+        safe_run_id = html_lib.escape(p.run_id, quote=True)
+        clips_status_label = f"{len(existing_clips)}/{len(p.scenes)} clips uploaded"
 
         cards_html += f"""
         <div class="run-card">
@@ -117,14 +191,14 @@ def dashboard_view():
           <div class="run-card-header">
             <div class="run-card-meta">
               <span class="slot-badge" style="{slot_bg}">{slot_label}</span>
-              <span class="run-id-badge">{p.run_id}</span>
+              <span class="run-id-badge">{safe_run_id}</span>
               <span class="status-pill" style="background:{meta['bg']}; color:{meta['color']}; border: 1px solid {meta['color']}40;">
                 <span class="status-dot" style="background:{meta['color']};"></span>
                 {meta['label']}
               </span>
             </div>
             <div class="run-time-meta">
-              Target Duration: <b>{p.total_duration_seconds}s</b> &bull; {len(p.scenes)} Scenes
+              Target Duration: <b>{p.total_duration_seconds}s</b> &bull; {len(p.scenes)} Scenes &bull; <b>{clips_status_label}</b>
             </div>
           </div>
 
@@ -158,34 +232,41 @@ def dashboard_view():
 
           <!-- Card Body -->
           <div class="run-card-body">
-            <h3 class="run-title">{p.metadata.title}</h3>
-            <div class="run-topic"><b>Topic:</b> {p.topic}</div>
-            <div class="run-hook"><b>Hook (0-3s):</b> <i>"{p.hook}"</i></div>
+            <h3 class="run-title">{html_lib.escape(p.metadata.title)}</h3>
+            <div class="run-topic"><b>Topic:</b> {html_lib.escape(p.topic)}</div>
+            <div class="run-hook"><b>Hook (0-3s):</b> <i>"{html_lib.escape(p.hook)}"</i></div>
 
             <div class="scenes-chips-container">
               {scenes_preview}
             </div>
+            {error_banner}
           </div>
 
           <!-- Card Footer Actions -->
           <div class="run-card-footer">
             <div class="action-buttons-group">
-              <button onclick="viewBrief('{p.run_id}')" class="btn-action btn-prompts">
+              <button onclick="viewBrief('{safe_run_id}')" class="btn-action btn-prompts">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 Google Flow Prompts Brief
               </button>
 
-              <button onclick="assembleRun('{p.run_id}')" class="btn-action btn-assemble">
+              <input type="file" id="clips-input-{safe_run_id}" multiple accept=".mp4,.mp3" style="display:none;" onchange="uploadClips('{safe_run_id}', this)" />
+              <button onclick="document.getElementById('clips-input-{safe_run_id}').click()" class="btn-action btn-prompts" style="background:rgba(99,102,241,0.15);color:#a5b4fc;border-color:rgba(99,102,241,0.3);">
+                Upload Clips (scene_01..mp4)
+              </button>
+
+              <button onclick="assembleRun('{safe_run_id}')" class="btn-action btn-assemble">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                 Assemble Video (FFmpeg)
               </button>
 
-              <button onclick="notifyRun('{p.run_id}')" class="btn-action btn-review">
+              <button onclick="notifyRun('{safe_run_id}')" class="btn-action btn-review">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                 Open Review Portal
               </button>
 
               {watch_btn}
+              {retry_upload_btn}
             </div>
           </div>
         </div>
@@ -202,8 +283,8 @@ def dashboard_view():
 
     history_items = "".join(
         f"""<div class="history-item">
-          <div class="history-topic">{h.get('topic')}</div>
-          <div class="history-meta">Run: <code>{h.get('run_id')}</code> &bull; Recorded: {h.get('recorded_at_utc', '')[:19].replace('T', ' ')} UTC</div>
+          <div class="history-topic">{html_lib.escape(str(h.get('topic', '')))}</div>
+          <div class="history-meta">Run: <code>{html_lib.escape(str(h.get('run_id', '')))}</code> &bull; Recorded: {html_lib.escape(str(h.get('recorded_at_utc', ''))[:19].replace('T', ' '))} UTC</div>
         </div>"""
         for h in reversed(history[-20:])
     ) or "<div class='empty-text'>No topic history recorded yet. Anti-duplication store is clean.</div>"
@@ -211,12 +292,12 @@ def dashboard_view():
     ledger_items = "".join(
         f"""<div class="ledger-item">
           <div class="ledger-header">
-            <span class="ledger-run">Run: {run_id}</span>
-            <span class="privacy-badge">🔒 {rec.get('privacy_status', 'private').upper()}</span>
+            <span class="ledger-run">Run: {html_lib.escape(str(run_id))}</span>
+            <span class="privacy-badge">🔒 {html_lib.escape(str(rec.get('privacy_status', 'private')).upper())}</span>
           </div>
           <div class="ledger-meta">
-            YouTube Video ID: <a href="https://studio.youtube.com" target="_blank" class="yt-link">{rec.get('youtube_video_id')}</a>
-            &bull; SHA-256: <code>{rec.get('video_sha256', '')[:16]}...</code>
+            YouTube Video ID: <a href="https://studio.youtube.com" target="_blank" class="yt-link">{html_lib.escape(str(rec.get('youtube_video_id', '')))}</a>
+            &bull; SHA-256: <code>{html_lib.escape(str(rec.get('video_sha256', ''))[:16])}...</code>
           </div>
         </div>"""
         for run_id, rec in ledger.items()
@@ -801,10 +882,10 @@ def dashboard_view():
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-          <button class="tab-btn active" onclick="switchTab('tab-pipeline')">🚀 Production Pipeline ({len(packages)})</button>
-          <button class="tab-btn" onclick="switchTab('tab-flow-guide')">🎨 Google Flow Handoff Guide</button>
-          <button class="tab-btn" onclick="switchTab('tab-history')">🛡️ Topic History ({len(history)})</button>
-          <button class="tab-btn" onclick="switchTab('tab-ledger')">📤 YouTube Publishing Ledger ({len(ledger)})</button>
+          <button class="tab-btn active" onclick="switchTab(event, 'tab-pipeline')">🚀 Production Pipeline ({len(packages)})</button>
+          <button class="tab-btn" onclick="switchTab(event, 'tab-flow-guide')">🎨 Google Flow Handoff Guide</button>
+          <button class="tab-btn" onclick="switchTab(event, 'tab-history')">🛡️ Topic History ({len(history)})</button>
+          <button class="tab-btn" onclick="switchTab(event, 'tab-ledger')">📤 YouTube Publishing Ledger ({len(ledger)})</button>
         </div>
 
         <!-- Tab 1: Pipeline Runs -->
@@ -817,15 +898,14 @@ def dashboard_view():
           <div class="box-panel" style="line-height: 1.7;">
             <h3>🎨 Google Flow Visual Generation Guide</h3>
             <p style="color:var(--text-muted); font-size:14px;">
-              Google Flow generation operates under your <b>Google AI Pro</b> subscription through an agreed manual handoff boundary. Follow these 4 steps for each production run:
+              Google Flow generation operates under your <b>Google AI Pro</b> subscription through an agreed manual handoff boundary. Follow these steps for each production run:
             </p>
             <ol style="color:#e2e8f0; font-size:14px; padding-left:20px;">
-              <li>Click <b>Google Flow Prompts Brief</b> on the active run above (or open <code>data/flow_exports/&lt;run_id&gt;/FLOW_PROMPTS.txt</code>).</li>
+              <li>Click <b>Google Flow Prompts Brief</b> on the active run above.</li>
               <li>Open <b>Google Flow</b> in your browser and set the format to <b>Vertical (9:16)</b>.</li>
               <li>For each scene (1 to 5), paste the generated visual prompt and set the matching duration (e.g. 8s).</li>
-              <li>Export each video clip and save into your project folder:
-                <br><code>data/flow_exports/&lt;run_id&gt;/scene_01.mp4</code> ... <code>scene_05.mp4</code>
-              </li>
+              <li>Export each clip as <code>scene_01.mp4</code> ... <code>scene_05.mp4</code> (and optionally <code>voiceover.mp3</code>).</li>
+              <li>Click <b>Upload Clips</b> on the run card to upload the exported files directly to this server (or save into <code>data/flow_exports/&lt;run_id&gt;/</code> when running locally).</li>
               <li>Click <b>Assemble Video (FFmpeg)</b> on the card above. FFmpeg will stitch the clips, standardize to 1080x1920, and add the neural voiceover!</li>
             </ol>
           </div>
@@ -886,11 +966,56 @@ def dashboard_view():
           setTimeout(() => {{ t.style.display = "none"; }}, 4500);
         }}
 
-        function switchTab(tabId) {{
+        function switchTab(ev, tabId) {{
           document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
           document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
           document.getElementById(tabId).classList.add('active');
-          event.target.classList.add('active');
+          if (ev && ev.currentTarget) {{
+            ev.currentTarget.classList.add('active');
+          }}
+        }}
+
+        async function uploadClips(runId, inputEl) {{
+          const files = inputEl.files;
+          if (!files || files.length === 0) return;
+          showToast("Uploading " + files.length + " file(s) for " + runId + "...");
+          const formData = new FormData();
+          for (const f of files) {{
+            formData.append("files", f);
+          }}
+          try {{
+            const res = await fetch("/api/upload-clips/" + runId, {{
+              method: "POST",
+              body: formData
+            }});
+            const data = await res.json();
+            if (res.ok) {{
+              showToast("Uploaded " + data.uploaded.length + " file(s)! Missing scenes: " + (data.missing_scenes.length ? data.missing_scenes.join(", ") : "None"));
+              setTimeout(() => location.reload(), 1200);
+            }} else {{
+              showToast("Upload failed: " + (data.detail || "Error"), true);
+            }}
+          }} catch (e) {{
+            showToast("Upload error: " + e, true);
+          }} finally {{
+            inputEl.value = "";
+          }}
+        }}
+
+        async function retryUpload(runId) {{
+          showToast("Uploading approved video for " + runId + " to YouTube (Private)...");
+          try {{
+            const res = await fetch("/api/retry-upload/" + runId, {{ method: "POST" }});
+            const data = await res.json();
+            if (res.ok) {{
+              showToast("Uploaded to YouTube! Video ID: " + data.youtube_video_id);
+              setTimeout(() => location.reload(), 1500);
+            }} else {{
+              showToast("YouTube upload failed: " + (data.detail || "Error"), true);
+            }}
+          }} catch (e) {{
+            showToast("Upload error: " + e, true);
+          }}
         }}
 
         async function triggerGenerate(slot) {{
@@ -975,10 +1100,10 @@ def dashboard_view():
 # =====================================================================
 
 @app.post("/api/generate")
-def api_generate_run(slot: SlotType = Query("morning")):
+def api_generate_run(slot: SlotType = Query("morning"), mock: bool = Query(False)):
     """Trigger content pipeline via UI."""
     try:
-        pkg = run_content_pipeline(slot=slot)
+        pkg = run_content_pipeline(slot=slot, force_mock=mock)
         return {
             "status": "success",
             "run_id": pkg.run_id,
@@ -991,9 +1116,102 @@ def api_generate_run(slot: SlotType = Query("morning")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/trigger-scheduled/{slot}")
+def api_trigger_scheduled(slot: SlotType):
+    """Trigger a scheduled slot generation run (useful for Render Cron Jobs)."""
+    try:
+        pkg = run_content_pipeline(slot=slot)
+        return {
+            "status": "success",
+            "run_id": pkg.run_id,
+            "slot": slot,
+            "topic": pkg.topic,
+        }
+    except Exception as e:
+        logger.error("Scheduled endpoint generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/upload-clips/{run_id}")
+async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
+    """Upload exported Google Flow scene clips (scene_01.mp4..) and optional voiceover.mp3."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    run_export_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded = []
+    for upload in files:
+        raw_name = Path(upload.filename or "").name
+        if not raw_name:
+            raise HTTPException(status_code=400, detail="Uploaded file is missing a filename.")
+        lower_name = raw_name.lower()
+        if not (lower_name.endswith(".mp4") or lower_name == "voiceover.mp3"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file '{raw_name}'. Upload scene_01.mp4..scene_0N.mp4 or voiceover.mp3."
+            )
+        if lower_name.endswith(".mp4") and extract_scene_number(raw_name) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"MP4 filename '{raw_name}' must follow scene_01.mp4 naming convention."
+            )
+
+        target_path = run_export_dir / raw_name
+        content = await upload.read()
+        if len(content) < 1024:
+            raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
+        target_path.write_bytes(content)
+        uploaded.append(raw_name)
+
+    found_numbers = {
+        extract_scene_number(f.name)
+        for f in run_export_dir.glob("*.mp4")
+        if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
+    }
+    missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
+
+    logger.info("Uploaded %d clip(s) for run %s: %s", len(uploaded), run_id, uploaded)
+    return {
+        "status": "success",
+        "run_id": run_id,
+        "uploaded": uploaded,
+        "found_scenes": sorted(found_numbers),
+        "missing_scenes": missing_scenes,
+    }
+
+
+@app.get("/api/clips/{run_id}")
+def api_list_clips(run_id: str):
+    """List uploaded scene clips and missing scene numbers for a run."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    mp4_files = sorted(f.name for f in run_export_dir.glob("*.mp4")) if run_export_dir.exists() else []
+    found_numbers = {
+        extract_scene_number(f)
+        for f in mp4_files
+        if extract_scene_number(f) > 0
+    }
+    missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
+    return {
+        "run_id": run_id,
+        "clips": mp4_files,
+        "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
+        "missing_scenes": missing_scenes,
+    }
+
+
 @app.post("/api/assemble/{run_id}")
 def api_assemble_run(run_id: str):
     """Trigger video assembly via UI."""
+    _validate_run_id(run_id)
     try:
         mp4_path = assemble_video(run_id)
         return {"status": "success", "run_id": run_id, "video_path": str(mp4_path)}
@@ -1003,27 +1221,65 @@ def api_assemble_run(run_id: str):
 
 
 @app.post("/api/notify/{run_id}")
-def api_notify_run(run_id: str):
+def api_notify_run(run_id: str, request: Request):
     """Generate review link and send email notification via UI."""
+    _validate_run_id(run_id)
     pkg = storage.load_package(run_id)
     if not pkg:
         raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
 
+    final_mp4 = settings.FINAL_OUTPUT_DIR / run_id / "final_short.mp4"
+    if not final_mp4.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Final assembled MP4 not found. Upload clips and run FFmpeg assembly first."
+        )
+
     raw_token, record = create_approval_record(run_id)
-    send_approval_email(pkg, raw_token)
-    review_url = f"{settings.APPROVAL_BASE_URL.rstrip('/')}/review/{run_id}?token={raw_token}"
+    email_sent = send_approval_email(pkg, raw_token)
+    storage.update_package_status(run_id, "awaiting_approval")
+    base_url = _resolve_base_url(request)
+    review_url = f"{base_url}/review/{run_id}?token={raw_token}"
 
     return {
         "status": "success",
         "run_id": run_id,
+        "email_sent": email_sent,
         "review_url": review_url,
         "expires_at": record.expires_at_utc
     }
 
 
+@app.post("/api/retry-upload/{run_id}")
+def api_retry_upload(run_id: str):
+    """Retry private YouTube upload for an already-approved run."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+    if pkg.status not in ("approved", "uploaded_private"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run {run_id} must be approved before uploading (current status: {pkg.status})."
+        )
+    try:
+        from app.youtube import upload_video_to_youtube
+        upload_record = upload_video_to_youtube(run_id)
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "youtube_video_id": upload_record.youtube_video_id,
+            "privacy_status": upload_record.privacy_status,
+        }
+    except Exception as e:
+        logger.error("Retry YouTube upload failed for %s: %s", run_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/brief/{run_id}", response_class=PlainTextResponse)
 def api_get_brief(run_id: str):
     """Retrieve raw FLOW_PROMPTS.txt content."""
+    _validate_run_id(run_id)
     brief_file = settings.FLOW_EXPORTS_DIR / run_id / "FLOW_PROMPTS.txt"
     if not brief_file.exists():
         raise HTTPException(status_code=404, detail=f"Flow brief not found for {run_id}")
@@ -1041,6 +1297,7 @@ def api_get_status():
         "history_count": len(history),
         "groq_model": settings.GROQ_MODEL,
         "timezone": settings.TIMEZONE,
+        "embedded_scheduler": settings.ENABLE_EMBEDDED_SCHEDULER,
     }
 
 
@@ -1049,8 +1306,9 @@ def api_get_status():
 # =====================================================================
 
 @app.post("/ready/{run_id}")
-def mark_run_ready(run_id: str):
+def mark_run_ready(run_id: str, request: Request):
     """Notify system that assembly is complete and send approval email."""
+    _validate_run_id(run_id)
     package = storage.load_package(run_id)
     if not package:
         raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
@@ -1066,7 +1324,8 @@ def mark_run_ready(run_id: str):
     email_sent = send_approval_email(package, raw_token)
     storage.update_package_status(run_id, "awaiting_approval")
 
-    review_url = f"{settings.APPROVAL_BASE_URL.rstrip('/')}/review/{run_id}?token={raw_token}"
+    base_url = _resolve_base_url(request)
+    review_url = f"{base_url}/review/{run_id}?token={raw_token}"
     return {
         "status": "awaiting_approval",
         "run_id": run_id,
@@ -1078,6 +1337,7 @@ def mark_run_ready(run_id: str):
 @app.get("/video/{run_id}")
 def stream_video(run_id: str):
     """Serve the assembled MP4 video file for browser preview."""
+    _validate_run_id(run_id)
     final_mp4 = settings.FINAL_OUTPUT_DIR / run_id / "final_short.mp4"
     if not final_mp4.exists():
         raise HTTPException(status_code=404, detail="Video file not found.")
@@ -1095,28 +1355,31 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
     if not package:
         raise HTTPException(status_code=404, detail="Package not found.")
 
+    esc = html_lib.escape
     scenes_cards = "".join(
         f"""<div class="scene-review-card">
           <div class="scene-review-header">
             <span class="scene-num">Scene {s.scene_number}</span>
             <span class="scene-dur">{s.duration_seconds} seconds</span>
-            <span class="scene-overlay"><b>Overlay:</b> "{s.on_screen_text}"</span>
+            <span class="scene-overlay"><b>Overlay:</b> "{esc(s.on_screen_text)}"</span>
           </div>
-          <div class="scene-voice"><b>Voiceover:</b> "{s.narration}"</div>
-          <div class="scene-prompt"><b>Flow Visual Prompt:</b> {s.visual_prompt}</div>
+          <div class="scene-voice"><b>Voiceover:</b> "{esc(s.narration)}"</div>
+          <div class="scene-prompt"><b>Flow Visual Prompt:</b> {esc(s.visual_prompt)}</div>
         </div>"""
         for s in package.scenes
     )
 
-    tags_html = " ".join(f"<span class='tag-chip'>{t}</span>" for t in package.metadata.tags)
-    hashtags_html = " ".join(f"<span class='hashtag-chip'>{h}</span>" for h in package.metadata.hashtags)
+    tags_html = " ".join(f"<span class='tag-chip'>{esc(t)}</span>" for t in package.metadata.tags)
+    hashtags_html = " ".join(f"<span class='hashtag-chip'>{esc(h)}</span>" for h in package.metadata.hashtags)
+    safe_run_id = esc(package.run_id, quote=True)
+    safe_token = esc(token, quote=True)
 
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
       <meta charset="utf-8">
-      <title>Review & Authorize: {package.metadata.title}</title>
+      <title>Review & Authorize: {esc(package.metadata.title)}</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <link rel="preconnect" href="https://fonts.googleapis.com">
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1315,7 +1578,7 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
         <div class="review-header">
           <div>
             <h2>🛡️ Short Review & Approval Gate</h2>
-            <div style="font-size:13px; color:var(--text-muted);">Run ID: <code>{package.run_id}</code> &bull; Slot: {package.slot.upper()}</div>
+            <div style="font-size:13px; color:var(--text-muted);">Run ID: <code>{safe_run_id}</code> &bull; Slot: {esc(package.slot.upper())}</div>
           </div>
           <span style="background:rgba(168, 85, 247, 0.2); color:#c084fc; border:1px solid rgba(168, 85, 247, 0.4); padding:6px 14px; border-radius:20px; font-size:12px; font-weight:700;">
             Awaiting Human Decision
@@ -1327,7 +1590,7 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
           <div>
             <div class="video-box">
               <video controls autoplay muted loop>
-                <source src="/video/{package.run_id}" type="video/mp4">
+                <source src="/video/{safe_run_id}" type="video/mp4">
                 Your browser does not support video preview.
               </video>
               <div class="video-meta">
@@ -1337,8 +1600,8 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
 
             <div class="decision-panel">
               <!-- Form 1: Approve (Explicit POST) -->
-              <form method="POST" action="/approve/{package.run_id}">
-                <input type="hidden" name="token" value="{token}">
+              <form method="POST" action="/approve/{safe_run_id}">
+                <input type="hidden" name="token" value="{safe_token}">
                 <button type="submit" class="btn-approve">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                   Approve & Upload Privately
@@ -1346,8 +1609,8 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
               </form>
 
               <!-- Form 2: Reject (Explicit POST) -->
-              <form method="POST" action="/reject/{package.run_id}" style="margin-top:10px;">
-                <input type="hidden" name="token" value="{token}">
+              <form method="POST" action="/reject/{safe_run_id}" style="margin-top:10px;">
+                <input type="hidden" name="token" value="{safe_token}">
                 <input type="text" name="comments" placeholder="Optional rejection feedback..." style="width:100%; padding:10px; margin-bottom:8px; border:1px solid var(--border); border-radius:8px; background:#0b0f19; color:#fff; font-size:13px;">
                 <button type="submit" class="btn-reject">
                   &cross; Reject & Cancel Upload
@@ -1359,15 +1622,15 @@ def review_page(run_id: str, token: str = Query(..., description="Approval secre
           <!-- Right Column: Metadata & Breakdown -->
           <div class="content-panel">
             <div class="detail-card">
-              <h1 style="font-size:22px; margin:0 0 10px 0; color:#fff;">{package.metadata.title}</h1>
-              <div style="font-size:14px; color:#cbd5e1; margin-bottom:8px;"><b>Topic:</b> {package.topic}</div>
-              <div style="font-size:14px; color:#94a3b8; margin-bottom:12px;"><b>Opening Hook:</b> <i>"{package.hook}"</i></div>
+              <h1 style="font-size:22px; margin:0 0 10px 0; color:#fff;">{esc(package.metadata.title)}</h1>
+              <div style="font-size:14px; color:#cbd5e1; margin-bottom:8px;"><b>Topic:</b> {esc(package.topic)}</div>
+              <div style="font-size:14px; color:#94a3b8; margin-bottom:12px;"><b>Opening Hook:</b> <i>"{esc(package.hook)}"</i></div>
               <div>{hashtags_html}</div>
             </div>
 
             <div class="detail-card">
               <h3>YouTube SEO Description</h3>
-              <p style="white-space:pre-wrap; margin:0; font-size:13px; color:#cbd5e1; line-height:1.6;">{package.metadata.description}</p>
+              <p style="white-space:pre-wrap; margin:0; font-size:13px; color:#cbd5e1; line-height:1.6;">{esc(package.metadata.description)}</p>
             </div>
 
             <div class="detail-card">
@@ -1407,11 +1670,18 @@ def approve_run(run_id: str, token: str = Form(...)):
     try:
         from app.youtube import upload_video_to_youtube
         upload_record = upload_video_to_youtube(run_id)
-        upload_result_msg = f"Successfully uploaded as Private! YouTube Video ID: <code>{upload_record.youtube_video_id}</code>"
+        upload_result_msg = (
+            f"Successfully uploaded as Private! YouTube Video ID: "
+            f"<code>{html_lib.escape(upload_record.youtube_video_id)}</code>"
+        )
     except Exception as e:
         logger.error("YouTube upload invocation failed for %s: %s", run_id, e)
-        upload_result_msg = f"Approval recorded, but YouTube upload failed or credentials needed: {str(e)}"
+        upload_result_msg = (
+            f"Approval recorded, but YouTube upload failed or credentials needed: "
+            f"{html_lib.escape(str(e))}"
+        )
 
+    safe_run_id = html_lib.escape(run_id)
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1430,9 +1700,9 @@ def approve_run(run_id: str, token: str = Form(...)):
     <body>
       <div class="card">
         <h1>&check; Short Approved!</h1>
-        <p>Run ID: <b>{run_id}</b></p>
+        <p>Run ID: <b>{safe_run_id}</b></p>
         <p style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); padding:12px; border-radius:10px; color:#34d399;">{upload_result_msg}</p>
-        <p style="font-size:12px; color:#64748b;">Single-use token consumed at {now_utc}. Replay attacks are permanently blocked.</p>
+        <p style="font-size:12px; color:#64748b;">Single-use token consumed at {html_lib.escape(now_utc)}. Replay attacks are permanently blocked.</p>
         <div style="margin-top:24px;">
           <a href="/">&larr; Return to Studio Dashboard</a>
         </div>
@@ -1456,6 +1726,8 @@ def reject_run(run_id: str, token: str = Form(...), comments: Optional[str] = Fo
 
     storage.update_package_status(run_id, "rejected", f"Rejected by approver: {comments or 'No comment'}")
 
+    safe_run_id = html_lib.escape(run_id)
+    safe_comments = html_lib.escape(comments or "None provided")
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1474,8 +1746,8 @@ def reject_run(run_id: str, token: str = Form(...), comments: Optional[str] = Fo
     <body>
       <div class="card">
         <h1>&cross; Video Rejected</h1>
-        <p>Run ID: <b>{run_id}</b> has been closed without uploading to YouTube.</p>
-        <p><i>Feedback: {comments or 'None provided'}</i></p>
+        <p>Run ID: <b>{safe_run_id}</b> has been closed without uploading to YouTube.</p>
+        <p><i>Feedback: {safe_comments}</i></p>
         <div style="margin-top:24px;">
           <a href="/">&larr; Return to Studio Dashboard</a>
         </div>

@@ -1,4 +1,5 @@
 import hashlib
+import html
 import secrets
 import smtplib
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,16 @@ from app.config import settings
 from app.logging_config import logger
 from app.models import ApprovalRecord, ProductionPackage
 from app.storage import storage
+
+
+def _is_placeholder(value: str) -> bool:
+    lowered = value.strip().lower()
+    return (
+        not lowered
+        or "your_email@" in lowered
+        or "your_app_password" in lowered
+        or "example.com" in lowered
+    )
 
 
 def generate_approval_token(run_id: str) -> Tuple[str, str, str, str]:
@@ -45,16 +56,18 @@ def create_approval_record(run_id: str, approver_email: Optional[str] = None) ->
 
 def build_approval_email_html(package: ProductionPackage, review_url: str) -> str:
     """Render a clean, responsive HTML email for video review and approval."""
+    esc = html.escape
     scenes_html = "".join(
         f"<tr>"
         f"<td style='padding:8px;border:1px solid #ddd;'>Scene {s.scene_number} ({s.duration_seconds}s)</td>"
-        f"<td style='padding:8px;border:1px solid #ddd;'><b>{s.on_screen_text}</b><br>{s.narration}</td>"
+        f"<td style='padding:8px;border:1px solid #ddd;'><b>{esc(s.on_screen_text)}</b><br>{esc(s.narration)}</td>"
         f"</tr>"
         for s in package.scenes
     )
 
-    tags_str = ", ".join(package.metadata.tags)
-    hashtags_str = " ".join(package.metadata.hashtags)
+    tags_str = esc(", ".join(package.metadata.tags))
+    hashtags_str = esc(" ".join(package.metadata.hashtags))
+    safe_review_url = esc(review_url, quote=True)
 
     return f"""
     <!DOCTYPE html>
@@ -77,17 +90,17 @@ def build_approval_email_html(package: ProductionPackage, review_url: str) -> st
       <div class="card">
         <div class="header">
           <h1>Approval Required: YouTube Short</h1>
-          <p style="margin:0; opacity:0.85;">Run ID: {package.run_id} | Slot: {package.slot.upper()}</p>
+          <p style="margin:0; opacity:0.85;">Run ID: {esc(package.run_id)} | Slot: {esc(package.slot.upper())}</p>
         </div>
         <div class="content">
-          <h2 style="margin-top:0;">{package.metadata.title}</h2>
+          <h2 style="margin-top:0;">{esc(package.metadata.title)}</h2>
           <div class="meta-box">
-            <b>Topic:</b> {package.topic}<br>
+            <b>Topic:</b> {esc(package.topic)}<br>
             <b>Target Duration:</b> {package.total_duration_seconds}s | <b>Scenes:</b> {len(package.scenes)}<br>
-            <b>Scheduled Local Time:</b> {package.scheduled_at_local}
+            <b>Scheduled Local Time:</b> {esc(package.scheduled_at_local)}
           </div>
 
-          <p><b>Hook:</b> <i>"{package.hook}"</i></p>
+          <p><b>Hook:</b> <i>"{esc(package.hook)}"</i></p>
           <p><b>Hashtags:</b> {hashtags_str}</p>
           <p><b>Tags:</b> {tags_str}</p>
 
@@ -105,7 +118,7 @@ def build_approval_email_html(package: ProductionPackage, review_url: str) -> st
           </table>
 
           <div style="text-align:center;">
-            <a href="{review_url}" class="btn">Review & Authorize Video</a>
+            <a href="{safe_review_url}" class="btn">Review & Authorize Video</a>
             <p style="font-size:12px; color:#666;">
               Security Notice: Clicking this link opens the secure review portal.<br>
               Approval requires an explicit interactive confirmation on the portal.
@@ -126,10 +139,15 @@ def send_approval_email(package: ProductionPackage, raw_token: str) -> bool:
     review_url = f"{settings.APPROVAL_BASE_URL.rstrip('/')}/review/{package.run_id}?token={raw_token}"
     recipient = settings.APPROVAL_RECIPIENT_EMAIL or "operator@local"
 
-    # Check if SMTP credentials are fully provided
-    if not settings.SMTP_HOST or not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
+    # Check if SMTP credentials are fully provided (not empty or placeholder)
+    if (
+        not settings.SMTP_HOST
+        or _is_placeholder(settings.SMTP_USERNAME)
+        or _is_placeholder(settings.SMTP_PASSWORD)
+        or _is_placeholder(recipient)
+    ):
         logger.warning(
-            "SMTP credentials not fully configured in .env. Dry-run mode: Review URL is: %s",
+            "SMTP credentials not configured. Dry-run mode: Review URL is: %s",
             review_url
         )
         return True
@@ -156,9 +174,12 @@ def send_approval_email(package: ProductionPackage, raw_token: str) -> bool:
 
     try:
         logger.info("Connecting to SMTP server %s:%d...", settings.SMTP_HOST, settings.SMTP_PORT)
-        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
-        if settings.SMTP_USE_TLS:
-            server.starttls()
+        if settings.SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
+        else:
+            server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
+            if settings.SMTP_USE_TLS:
+                server.starttls()
         server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()

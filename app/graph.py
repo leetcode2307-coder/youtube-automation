@@ -144,13 +144,25 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
     structured_llm = llm.with_structured_output(ScriptOutput)
     result: ScriptOutput = structured_llm.invoke(prompt)
 
-    total_duration = sum(s.duration_seconds for s in result.scenes)
-    full_narration = " ".join(s.narration for s in result.scenes)
+    # Normalize scene ordering and export filenames (e.g., scene_01.mp4)
+    normalized_scenes: List[Scene] = []
+    for idx, scene in enumerate(result.scenes, start=1):
+        normalized_scenes.append(
+            scene.model_copy(
+                update={
+                    "scene_number": idx,
+                    "export_filename": f"scene_{idx:02d}.mp4",
+                }
+            )
+        )
 
-    logger.info("Drafted script: %d scenes, %d seconds total duration", len(result.scenes), total_duration)
+    total_duration = sum(s.duration_seconds for s in normalized_scenes)
+    full_narration = " ".join(s.narration for s in normalized_scenes)
+
+    logger.info("Drafted script: %d scenes, %d seconds total duration", len(normalized_scenes), total_duration)
     return {
         "hook": result.hook,
-        "scenes": result.scenes,
+        "scenes": normalized_scenes,
         "cta": result.cta,
         "narration_full": full_narration,
         "total_duration_seconds": total_duration,

@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: ai-shorts-automation
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: MORNING_CRON
+        value: 0 7 * * *
+      - key: EVENING_CRON
+        value: 30 16 * * *
+      - key: ENABLE_EMBEDDED_SCHEDULER
+        value: "true"
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GROQ_API_KEY
+        sync: false
+      - key: APPROVAL_SECRET_KEY
+        generateValue: true
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USE_TLS
+        value: "true"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SENDER_EMAIL
+        sync: false
+      - key: APPROVAL_RECIPIENT_EMAIL
+        sync: false
+      - key: DEFAULT_PRIVACY_STATUS
+        value: private
+      - key: TTS_VOICE
+        value: en-US-ChristopherNeural
+      - key: FFMPEG_THREADS
+        value: "2"
+      - key: YOUTUBE_CLIENT_SECRET_JSON
+        sync: false
+      - key: YOUTUBE_TOKEN_JSON
+        sync: false
+      # Optional: attach a Render Persistent Disk at /var/data (Starter+ plan) and set:
+      # - key: DATA_DIR
+      #   value: /var/data

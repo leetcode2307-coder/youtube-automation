@@ -189,6 +189,21 @@ docker compose down
 
 ---
 
+## ☁️ Deploying on Render
+
+This repository includes a `render.yaml` Blueprint and a `$PORT`-aware `Dockerfile` ready for Render deployment:
+
+1. **YouTube OAuth (One-Time Local Authorization)**:
+   Run `python cli.py youtube-auth` locally with `client_secret.json` in the project root to generate `token.json`.
+2. **Create Web Service on Render**:
+   Push to GitHub and create a **Web Service** (or **New > Blueprint** using `render.yaml`) on Render.
+3. **Configure Environment Variables on Render**:
+   Set `GROQ_API_KEY`, `APPROVAL_SECRET_KEY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SENDER_EMAIL`, `APPROVAL_RECIPIENT_EMAIL`, `ENABLE_EMBEDDED_SCHEDULER=true`, and either set `YOUTUBE_CLIENT_SECRET_JSON` + `YOUTUBE_TOKEN_JSON` or upload `client_secret.json` & `token.json` as Render Secret Files.
+4. **Upload Google Flow Clips via Web UI**:
+   Open your Render dashboard URL, click **Google Flow Prompts Brief**, generate clips in Google Flow, click **Upload Clips** on the run card to upload `scene_01.mp4 .. scene_0N.mp4`, then click **Assemble Video (FFmpeg)** and **Open Review Portal**.
+
+---
+
 ## 🔒 Security & Safe Publishing
 
 1. **Zero Credential Exposure**: API keys, SMTP passwords, and OAuth tokens are loaded strictly via `.env` and `pydantic-settings`. All logs automatically redact secret patterns (`gsk_...`, bearer tokens, passwords).

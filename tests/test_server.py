@@ -22,6 +22,7 @@ def test_package(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
     monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
     monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+    monkeypatch.setattr(settings, "SMTP_USERNAME", "")
 
     settings.ensure_directories()
 
@@ -87,7 +88,8 @@ def test_approval_workflow_and_replay_protection(test_package):
     res_portal = client.get(f"/review/{run_id}?token={raw_token}")
     assert res_portal.status_code == 200
     assert "Review & Approval Gate" in res_portal.text
-    assert test_package.metadata.title in res_portal.text
+    import html as html_lib
+    assert html_lib.escape(test_package.metadata.title) in res_portal.text
     # Ensure GET did NOT change status to approved
     pkg_check = storage.load_package(run_id)
     assert pkg_check.status == "awaiting_approval"
@@ -136,3 +138,64 @@ def test_dashboard_ui_and_api(test_package):
     res_status = client.get("/api/status")
     assert res_status.status_code == 200
     assert res_status.json()["total_packages"] >= 1
+
+
+def test_clip_upload_notify_and_retry_upload(test_package):
+    run_id = test_package.run_id
+
+    # 1. Upload clips via multipart API
+    files = [
+        ("files", (f"scene_0{i}.mp4", b"FAKE_MP4_DATA_" * 200, "video/mp4"))
+        for i in range(1, 6)
+    ]
+    res_up = client.post(f"/api/upload-clips/{run_id}", files=files)
+    assert res_up.status_code == 200
+    up_data = res_up.json()
+    assert len(up_data["uploaded"]) == 5
+    assert up_data["missing_scenes"] == []
+
+    # 2. Check clips listing endpoint
+    res_clips = client.get(f"/api/clips/{run_id}")
+    assert res_clips.status_code == 200
+    assert len(res_clips.json()["clips"]) == 5
+
+    # 3. Reject invalid extension upload
+    res_bad_up = client.post(
+        f"/api/upload-clips/{run_id}",
+        files=[("files", ("bad_clip.avi", b"A" * 2048, "video/x-msvideo"))],
+    )
+    assert res_bad_up.status_code == 400
+
+    # 4. Path traversal protection
+    res_trav = client.get("/api/clips/..evil")
+    assert res_trav.status_code == 400
+
+    # 5. Notify endpoint updates status and returns review URL
+    res_notify = client.post(f"/api/notify/{run_id}")
+    assert res_notify.status_code == 200
+    assert "token=" in res_notify.json()["review_url"]
+    assert storage.load_package(run_id).status == "awaiting_approval"
+
+    # 6. Retry upload endpoint works once approved
+    storage.update_package_status(run_id, "approved")
+    res_retry = client.post(f"/api/retry-upload/{run_id}")
+    assert res_retry.status_code == 200
+    assert res_retry.json()["youtube_video_id"].startswith("mock_yt_")
+
+
+def test_api_generate_mock(tmp_path, monkeypatch):
+    test_data = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+    settings.ensure_directories()
+
+    res = client.post("/api/generate?slot=evening&mock=true")
+    assert res.status_code == 200
+    data = res.json()
+    assert "evening" in data["run_id"]
+    assert 30 <= data["duration"] <= 45

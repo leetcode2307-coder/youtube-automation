@@ -156,3 +156,68 @@ def test_ffmpeg_assembly_end_to_end(tmp_path, monkeypatch):
     # Check updated status
     updated_pkg = storage.load_package(run_id)
     assert updated_pkg.status == "awaiting_approval"
+
+
+def test_ffmpeg_assembly_heterogeneous_clips_and_tts_word_boundary(tmp_path, monkeypatch):
+    test_data = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+
+    settings.ensure_directories()
+
+    run_id = "test_hetero_run"
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    run_export_dir.mkdir(parents=True)
+
+    # Create 3 clips with different resolutions/framerates and no audio stream (11s each = 33s)
+    specs = [("720x1280", "24"), ("1080x1920", "30"), ("540x960", "25")]
+    scenes = []
+    for i, (size, fps) in enumerate(specs, start=1):
+        clip_file = run_export_dir / f"scene_0{i}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", f"color=c=teal:s={size}:r={fps}:d=11",
+            "-c:v", "libx264", "-t", "11", "-pix_fmt", "yuv420p",
+            str(clip_file),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        scenes.append(
+            Scene(
+                scene_number=i,
+                duration_seconds=11,
+                narration=f"Heterogeneous scene {i} narration for FFmpeg normalization.",
+                visual_prompt=f"Futuristic 9:16 vertical scene {i} render",
+                export_filename=f"scene_0{i}.mp4",
+            )
+        )
+
+    pkg = ProductionPackage(
+        run_id=run_id,
+        slot="evening",
+        created_at_utc="2026-11-25T01:30:00Z",
+        scheduled_at_local="2026-11-25 16:30:00 IST",
+        topic="Heterogeneous Clip Normalization",
+        hook="Testing mixed resolution clips with neural voiceover.",
+        narration_full="Testing mixed resolution clips with neural voiceover and accurate stream mapping.",
+        scenes=scenes,
+        total_duration_seconds=33,
+        metadata=SEOMetadata(
+            title="Heterogeneous Clip Assembly Test",
+            description="Testing mixed clip resolutions and framerates.",
+            hashtags=["#AIEngineering", "#FFmpeg", "#Shorts"],
+            tags=["ffmpeg", "shorts", "video", "automation"],
+        ),
+        status="awaiting_flow_export",
+    )
+    storage.save_package(pkg)
+
+    final_video = assemble_video(run_id)
+    assert final_video.exists()
+    srt_file = settings.FINAL_OUTPUT_DIR / run_id / "captions.srt"
+    assert srt_file.exists()
+    assert "00:00:" in srt_file.read_text(encoding="utf-8")

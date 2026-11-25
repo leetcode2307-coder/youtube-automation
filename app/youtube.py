@@ -1,8 +1,8 @@
+import base64
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -19,40 +19,130 @@ from app.storage import storage
 YOUTUBE_UPLOAD_SCOPE = ["https://www.googleapis.com/auth/youtube.upload"]
 
 
-def get_youtube_service(mock: bool = False):
+def _parse_json_secret(raw_value: str) -> Optional[Dict[str, Any]]:
+    """Parse raw JSON or base64-encoded JSON from an environment variable."""
+    raw = raw_value.strip()
+    if not raw:
+        return None
+    try:
+        if raw.startswith("{"):
+            return json.loads(raw)
+        decoded = base64.b64decode(raw).decode("utf-8")
+        return json.loads(decoded)
+    except Exception as e:
+        logger.warning("Failed to parse YouTube JSON credential from environment: %s", e)
+        return None
+
+
+def _load_client_secrets_config() -> Optional[Dict[str, Any]]:
+    """Load YouTube OAuth client secrets from env var, local path, or Render /etc/secrets."""
+    env_cfg = _parse_json_secret(settings.YOUTUBE_CLIENT_SECRET_JSON)
+    if env_cfg:
+        return env_cfg
+
+    candidates = [
+        settings.YOUTUBE_CLIENT_SECRETS_FILE,
+        Path("/etc/secrets") / settings.YOUTUBE_CLIENT_SECRETS_FILE.name,
+    ]
+    for path in candidates:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    return None
+
+
+def _load_existing_credentials() -> Optional[Credentials]:
+    """Load OAuth user credentials from writable cache, configured file, Render secret, or env var."""
+    cache_token_file = settings.DATA_DIR / "youtube_token.json"
+    candidates = [
+        cache_token_file,
+        settings.YOUTUBE_TOKEN_FILE,
+        Path("/etc/secrets") / settings.YOUTUBE_TOKEN_FILE.name,
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                return Credentials.from_authorized_user_file(str(path), YOUTUBE_UPLOAD_SCOPE)
+            except Exception as e:
+                logger.warning("Failed to load YouTube token from %s: %s", path, e)
+
+    env_token = _parse_json_secret(settings.YOUTUBE_TOKEN_JSON)
+    if env_token:
+        try:
+            return Credentials.from_authorized_user_info(env_token, YOUTUBE_UPLOAD_SCOPE)
+        except Exception as e:
+            logger.warning("Failed to parse YOUTUBE_TOKEN_JSON: %s", e)
+
+    return None
+
+
+def _save_credentials(creds: Credentials) -> Path:
+    """Persist refreshed credentials to a writable path (falling back to DATA_DIR on read-only mounts)."""
+    target = settings.YOUTUBE_TOKEN_FILE
+    if str(target).startswith("/etc/secrets") or settings.YOUTUBE_TOKEN_JSON.strip():
+        target = settings.DATA_DIR / "youtube_token.json"
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as token_out:
+            token_out.write(creds.to_json())
+        return target
+    except OSError:
+        fallback = settings.DATA_DIR / "youtube_token.json"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        with open(fallback, "w", encoding="utf-8") as token_out:
+            token_out.write(creds.to_json())
+        return fallback
+
+
+def authorize_youtube_interactive() -> Path:
+    """Run local browser OAuth flow explicitly via CLI to generate token.json."""
+    client_config = _load_client_secrets_config()
+    if not client_config:
+        raise FileNotFoundError(
+            f"YouTube client secrets not found at {settings.YOUTUBE_CLIENT_SECRETS_FILE} "
+            "or YOUTUBE_CLIENT_SECRET_JSON."
+        )
+    flow = InstalledAppFlow.from_client_config(client_config, YOUTUBE_UPLOAD_SCOPE)
+    creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
+    saved_path = _save_credentials(creds)
+    logger.info("Saved YouTube OAuth token to %s", saved_path)
+    return saved_path
+
+
+def get_youtube_service(mock: bool = False, interactive: bool = False):
     """Retrieve authenticated YouTube Data API v3 service or None if mock/credentials missing."""
     if mock:
         return None
 
-    secrets_file = settings.YOUTUBE_CLIENT_SECRETS_FILE
-    token_file = settings.YOUTUBE_TOKEN_FILE
-
-    if not secrets_file.exists():
+    client_config = _load_client_secrets_config()
+    if not client_config:
         logger.warning(
-            "YouTube client secrets file not found at %s. Running in dry-run/mock mode.",
-            secrets_file
+            "YouTube client secrets not found at %s (or env/Render secrets). Running in dry-run/mock mode.",
+            settings.YOUTUBE_CLIENT_SECRETS_FILE
         )
         return None
 
-    creds: Optional[Credentials] = None
-    if token_file.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_file), YOUTUBE_UPLOAD_SCOPE)
-        except Exception as e:
-            logger.warning("Failed to load existing token.json: %s", e)
+    creds = _load_existing_credentials()
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             logger.info("Refreshing expired YouTube OAuth token...")
             creds.refresh(Request())
-        else:
+            saved_path = _save_credentials(creds)
+            logger.info("Saved refreshed YouTube token to %s", saved_path)
+        elif interactive:
             logger.info("Initiating local YouTube OAuth browser authorization...")
-            flow = InstalledAppFlow.from_client_secrets_file(str(secrets_file), YOUTUBE_UPLOAD_SCOPE)
-            creds = flow.run_local_server(port=0)
-
-        with open(token_file, "w", encoding="utf-8") as token_out:
-            token_out.write(creds.to_json())
-        logger.info("Saved refreshed YouTube token to %s", token_file)
+            flow = InstalledAppFlow.from_client_config(client_config, YOUTUBE_UPLOAD_SCOPE)
+            creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
+            saved_path = _save_credentials(creds)
+            logger.info("Saved YouTube token to %s", saved_path)
+        else:
+            raise RuntimeError(
+                "YouTube OAuth token (token.json or YOUTUBE_TOKEN_JSON) is missing or lacks a refresh_token. "
+                "Run 'python cli.py youtube-auth' on your local machine to generate token.json, then "
+                "upload it to Render Secret Files (/etc/secrets/token.json) or set YOUTUBE_TOKEN_JSON."
+            )
 
     return build("youtube", "v3", credentials=creds)
 
