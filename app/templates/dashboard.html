@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ studio_cfg.studio_name }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebarScrim" class="sidebar-scrim" onclick="toggleSidebar(false)"></div>
+
+    <!-- Left Navigation Sidebar -->
+    <aside id="sidebar" class="sidebar" aria-label="Primary Navigation">
+      <div class="sidebar-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        </div>
+        <div style="min-width:0;">
+          <div class="brand-title">{{ studio_cfg.studio_name }}</div>
+          <div class="brand-sub" title="{{ studio_cfg.niche }}">{{ studio_cfg.niche }}</div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button type="button" class="nav-item active" data-section="overview" onclick="navigateTo('overview')" aria-current="page">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Overview
+          </span>
+        </button>
+
+        <button type="button" class="nav-item" data-section="videos" onclick="navigateTo('videos')">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Videos &amp; Pipeline
+          </span>
+          <span class="nav-badge">{{ counts.total }}</span>
+        </button>
+
+        <button type="button" class="nav-item" data-section="ledger" onclick="navigateTo('ledger')">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Publishing Ledger
+          </span>
+          <span class="nav-badge">{{ counts.published }}</span>
+        </button>
+
+        <button type="button" class="nav-item" data-section="schedule" onclick="navigateTo('schedule')">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Schedule
+          </span>
+        </button>
+
+        <button type="button" class="nav-item" data-section="activity" onclick="navigateTo('activity')">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Activity &amp; Logs
+          </span>
+          {% if counts.failed > 0 %}
+          <span class="nav-badge" style="background:var(--status-danger-bg);color:var(--status-danger-fg);">{{ counts.failed }}</span>
+          {% endif %}
+        </button>
+
+        <button type="button" class="nav-item" data-section="settings" onclick="navigateTo('settings')">
+          <span class="nav-item-left">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Settings &amp; Health
+          </span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-inline">
+          <span class="dot {{ 'dot-success' if scheduler_info.active else 'dot-amber' }}"></span>
+          <span>{{ 'Scheduler Active' if scheduler_info.active else 'Manual Mode' }}</span>
+        </div>
+        <div>Timezone: {{ scheduler_info.timezone_label }}</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Workspace -->
+    <div class="main-area">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="menuToggleBtn" type="button" class="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" onclick="toggleSidebar()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <h1 id="topbarTitle" class="page-title">Overview</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="badge badge-neutral">Niche: {{ studio_cfg.niche }}</span>
+          <span class="badge badge-info">Default: {{ studio_cfg.default_privacy_status|capitalize }}</span>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.reload()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <main class="content-wrap">
+
+        <!-- ============================================================ -->
+        <!-- SECTION 1: OVERVIEW                                          -->
+        <!-- ============================================================ -->
+        <section id="section-overview" class="section-panel active" aria-label="Overview">
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-label">Automation Status</div>
+              <div class="kpi-value" style="font-size:18px; display:flex; align-items:center; gap:8px;">
+                <span class="dot {{ 'dot-success' if scheduler_info.active else 'dot-amber' }}"></span>
+                {{ 'Running' if scheduler_info.active else 'Manual Only' }}
+              </div>
+              <div class="kpi-meta">{{ scheduler_info.timezone_label }}</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Next Scheduled Video</div>
+              <div class="kpi-value" style="font-size:17px;">{{ scheduler_info.soonest.formatted }}</div>
+              <div class="kpi-meta">{{ scheduler_info.soonest.slot }} slot ({{ scheduler_info.soonest.relative }})</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Waiting for Approval</div>
+              <div class="kpi-value">{{ counts.awaiting_approval }}</div>
+              <div class="kpi-meta">{{ counts.needs_clips }} waiting for clips</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Published to YouTube</div>
+              <div class="kpi-value">{{ counts.published }}</div>
+              <div class="kpi-meta">
+                {% if counts.failed > 0 %}
+                <span style="color:var(--status-danger-fg); font-weight:600;">{{ counts.failed }} error(s) need attention</span>
+                {% else %}
+                No errors detected
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+          <!-- Create New Short Panel -->
+          <div class="create-panel">
+            <div class="card-header" style="margin-bottom:0;">
+              <div>
+                <h2 class="card-title">Create a New YouTube Short</h2>
+                <p class="card-subtitle">Generates a fresh topic, voiceover script, SEO metadata, and scene prompts for Google Flow.</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('settings')">Change Studio Defaults</button>
+            </div>
+            <div class="create-grid">
+              <div class="field">
+                <label for="quickNiche">Topic Niche / Interest</label>
+                <input id="quickNiche" class="input" type="text" value="{{ studio_cfg.niche }}" placeholder="e.g. AI Engineering, Space, Personal Finance">
+              </div>
+              <div class="field">
+                <label for="quickTopic">Specific Topic (Optional)</label>
+                <input id="quickTopic" class="input" type="text" placeholder="Leave blank to let AI pick a fresh topic">
+              </div>
+              <div class="btn-group">
+                <button type="button" class="btn btn-primary" onclick="generateShort('morning', this)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  Generate Morning Short
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="generateShort('evening', this)">
+                  Generate Evening Short
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actionable Queue & Recent Activity -->
+          <div class="grid-2">
+            <div class="card card-pad">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Needs Your Attention</h2>
+                  <p class="card-subtitle">Videos waiting for clips, approval, or error review.</p>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('videos')">View All ({{ counts.total }})</button>
+              </div>
+
+              {% if attention_runs %}
+                {% for item in attention_runs[:4] %}
+                <div class="timeline-item" style="margin-bottom:10px; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+                  <div style="min-width:200px; flex:1;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;">
+                      <span class="badge badge-{{ item.status_tone }}">{{ item.status_label }}</span>
+                      <span class="mono" style="color:var(--color-muted-foreground);">{{ item.pkg.run_id }}</span>
+                    </div>
+                    <div style="font-weight:600; font-size:14px;">{{ item.pkg.metadata.title }}</div>
+                    <div style="font-size:12px; color:var(--color-muted-foreground);">{{ item.next_action }}</div>
+                  </div>
+                  <div class="btn-group">
+                    {% if item.pkg.status == 'awaiting_approval' %}
+                    <button type="button" class="btn btn-success btn-sm" onclick="openReview('{{ item.pkg.run_id }}', false, this)">Review &amp; Approve</button>
+                    {% else %}
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('videos')">Open</button>
+                    {% endif %}
+                  </div>
+                </div>
+                {% endfor %}
+              {% else %}
+                <div class="empty-state" style="padding:28px 16px;">
+                  <h3>Everything is up to date</h3>
+                  <p style="margin:0; font-size:13px;">No videos are currently waiting for clips or approval.</p>
+                </div>
+              {% endif %}
+            </div>
+
+            <div class="card card-pad">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Recent Activity</h2>
+                  <p class="card-subtitle">Latest pipeline actions and YouTube uploads.</p>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('activity')">Full Timeline</button>
+              </div>
+
+              {% if timeline %}
+                <div class="timeline">
+                  {% for ev in timeline[:5] %}
+                  <div class="timeline-item">
+                    <span class="dot dot-{{ ev.tone }}" style="margin-top:6px;"></span>
+                    <div style="min-width:0;">
+                      <div style="font-weight:600; font-size:13px;">{{ ev.event }}</div>
+                      <div style="font-size:12px; color:var(--color-muted-foreground);">{{ ev.title }}</div>
+                      <div style="font-size:11px; color:var(--color-muted-foreground); margin-top:2px;">{{ ev.timestamp_display }}</div>
+                    </div>
+                  </div>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <div class="empty-state" style="padding:28px 16px;">
+                  <h3>No activity recorded yet</h3>
+                  <p style="margin:0; font-size:13px;">Create your first Short above to see progress here.</p>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- SECTION 2: VIDEOS & PIPELINE                                 -->
+        <!-- ============================================================ -->
+        <section id="section-videos" class="section-panel" aria-label="Videos and Pipeline">
+          <div class="filter-bar">
+            <div class="filter-pills" role="group" aria-label="Filter videos by status">
+              <button type="button" class="filter-btn" data-filter="all" aria-pressed="true" onclick="filterRuns('all', this)">All ({{ counts.total }})</button>
+              <button type="button" class="filter-btn" data-filter="needs_clips" aria-pressed="false" onclick="filterRuns('needs_clips', this)">Needs Clips ({{ counts.needs_clips }})</button>
+              <button type="button" class="filter-btn" data-filter="awaiting_approval" aria-pressed="false" onclick="filterRuns('awaiting_approval', this)">Waiting Approval ({{ counts.awaiting_approval }})</button>
+              <button type="button" class="filter-btn" data-filter="published" aria-pressed="false" onclick="filterRuns('published', this)">Published ({{ counts.published }})</button>
+              <button type="button" class="filter-btn" data-filter="failed" aria-pressed="false" onclick="filterRuns('failed', this)">Errors ({{ counts.failed }})</button>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" onclick="navigateTo('overview')">New Video</button>
+          </div>
+
+          {% if run_items %}
+            {% for item in run_items %}
+            {% set p = item.pkg %}
+            <article class="run-card" id="card-{{ p.run_id }}" data-filter-group="{{ item.filter_groups }}">
+              <div class="run-top">
+                <div class="run-badges">
+                  <span class="badge badge-{{ item.status_tone }}">
+                    <span class="dot dot-{{ item.status_tone if item.status_tone in ['success','amber','danger'] else 'info' }}"></span>
+                    {{ item.status_label }}
+                  </span>
+                  <span class="badge badge-neutral">{{ p.slot|capitalize }}</span>
+                  <span class="badge badge-neutral">{{ item.niche }}</span>
+                  <span class="badge badge-info">{{ item.privacy|capitalize }}</span>
+                  {% if p.metadata.synthetic_media_disclosure %}
+                  <span class="badge badge-purple">AI Content Disclosed</span>
+                  {% endif %}
+                </div>
+                <div class="mono" style="color:var(--color-muted-foreground);">
+                  {{ p.run_id }} &bull; {{ p.total_duration_seconds }}s &bull; {{ item.clips_ready }}/{{ p.scenes|length }} clips
+                </div>
+              </div>
+
+              <h3 class="run-title">{{ p.metadata.title }}</h3>
+              <p class="run-meta-line"><b>Topic:</b> {{ p.topic }} &mdash; <i>"{{ p.hook }}"</i></p>
+
+              <!-- 4-Step Progress -->
+              <div class="steps-track" aria-label="Production progress">
+                {% set st = item.step %}
+                <div class="step-box {{ 'done' if st > 1 or item.is_published else 'active' if st == 1 else '' }}">
+                  <div class="step-num">Step 1</div>
+                  <div>Script &amp; Prompts</div>
+                </div>
+                <div class="step-box {{ 'error' if p.status == 'failed' else ('done' if st > 2 or item.is_published else ('active' if st == 2 else '')) }}">
+                  <div class="step-num">Step 2</div>
+                  <div>Upload Clips</div>
+                </div>
+                <div class="step-box {{ 'done' if st > 3 or item.is_published else 'active' if st == 3 else '' }}">
+                  <div class="step-num">Step 3</div>
+                  <div>Assemble Video</div>
+                </div>
+                <div class="step-box {{ 'error' if p.status == 'rejected' else ('done' if item.is_published else ('active' if st == 4 else '')) }}">
+                  <div class="step-num">Step 4</div>
+                  <div>Review &amp; Publish</div>
+                </div>
+              </div>
+
+              <div class="next-step-callout">
+                <b>Next step:</b> {{ item.next_action }}
+              </div>
+
+              {% if p.status == 'failed' and p.error_message %}
+              <div class="alert-error" role="alert">
+                <b>What happened:</b> {{ item.error_friendly }}
+                <details style="margin-top:6px;">
+                  <summary style="cursor:pointer; font-size:12px;">Technical details</summary>
+                  <div class="mono" style="margin-top:4px; white-space:pre-wrap;">{{ p.error_message }}</div>
+                </details>
+              </div>
+              {% endif %}
+
+              <!-- Scene Clips Checklist -->
+              <div class="clip-list">
+                {% for sc in p.scenes %}
+                <span class="clip-chip {{ 'ready' if sc.scene_number in item.existing_clips else '' }}" title="{{ sc.narration }}">
+                  {{ 'Ready: ' if sc.scene_number in item.existing_clips else 'Missing: ' }}{{ sc.export_filename }} ({{ sc.duration_seconds }}s)
+                </span>
+                {% endfor %}
+                {% if item.has_custom_vo %}
+                <span class="clip-chip ready">Ready: voiceover.mp3</span>
+                {% endif %}
+              </div>
+
+              <!-- Upload Dropzone -->
+              <div class="drop-zone"
+                   tabindex="0"
+                   role="button"
+                   aria-label="Upload scene clips for {{ p.run_id }}"
+                   ondragover="event.preventDefault(); this.classList.add('drag-over');"
+                   ondragleave="this.classList.remove('drag-over');"
+                   ondrop="handleDrop(event, '{{ p.run_id }}')"
+                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); document.getElementById('clips-input-{{ p.run_id }}').click();}"
+                   onclick="document.getElementById('clips-input-{{ p.run_id }}').click()">
+                <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.mp3" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
+                <b>Drop or click to upload clips</b> (<span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>)
+                {% if studio_cfg.auto_assemble_on_upload %}
+                &mdash; automatically assembles video &amp; opens review once all clips arrive.
+                {% endif %}
+              </div>
+
+              <div class="progress-banner" id="progress-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
+
+              <!-- Inline Metadata & Settings Editor -->
+              <details class="inline-drawer">
+                <summary>Edit Title, Description, Tags, Visibility &amp; AI Disclosure</summary>
+                <div class="form-grid" style="margin-top:12px;">
+                  <div class="field full">
+                    <label for="edit-title-{{ p.run_id }}">YouTube Title</label>
+                    <input id="edit-title-{{ p.run_id }}" class="input" type="text" maxlength="100" value="{{ p.metadata.title }}">
+                  </div>
+                  <div class="field full">
+                    <label for="edit-desc-{{ p.run_id }}">YouTube Description</label>
+                    <textarea id="edit-desc-{{ p.run_id }}" class="textarea" rows="3">{{ p.metadata.description }}</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="edit-tags-{{ p.run_id }}">Tags (comma-separated)</label>
+                    <input id="edit-tags-{{ p.run_id }}" class="input" type="text" value="{{ p.metadata.tags|join(', ') }}">
+                  </div>
+                  <div class="field">
+                    <label for="edit-hashtags-{{ p.run_id }}">Hashtags (comma-separated)</label>
+                    <input id="edit-hashtags-{{ p.run_id }}" class="input" type="text" value="{{ p.metadata.hashtags|join(', ') }}">
+                  </div>
+                  <div class="field full">
+                    <label for="edit-narration-{{ p.run_id }}">Voiceover Narration Script</label>
+                    <textarea id="edit-narration-{{ p.run_id }}" class="textarea" rows="2">{{ p.narration_full }}</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="edit-privacy-{{ p.run_id }}">YouTube Visibility</label>
+                    <select id="edit-privacy-{{ p.run_id }}" class="select">
+                      <option value="private" {{ 'selected' if item.privacy == 'private' else '' }}>Private (Review in YouTube Studio first)</option>
+                      <option value="unlisted" {{ 'selected' if item.privacy == 'unlisted' else '' }}>Unlisted (Share via link)</option>
+                      <option value="public" {{ 'selected' if item.privacy == 'public' else '' }}>Public (Publish immediately)</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="edit-cat-{{ p.run_id }}">YouTube Category</label>
+                    <select id="edit-cat-{{ p.run_id }}" class="select">
+                      {% for cid, clabel in categories %}
+                      <option value="{{ cid }}" {{ 'selected' if p.metadata.category_id|string == cid else '' }}>{{ clabel }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div class="field full">
+                    <label class="checkbox-row">
+                      <input type="checkbox" id="edit-ai-{{ p.run_id }}" {{ 'checked' if p.metadata.synthetic_media_disclosure else '' }}>
+                      <span>Mark as containing AI-generated / synthetic content</span>
+                    </label>
+                  </div>
+                  <div class="field full" style="align-items:flex-end;">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="saveRunEdits('{{ p.run_id }}', this)">Save Changes</button>
+                  </div>
+                </div>
+              </details>
+
+              <div class="run-footer">
+                <div class="btn-group">
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="viewBrief('{{ p.run_id }}')">View Visual Prompts</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="assembleRun('{{ p.run_id }}', this)">Assemble Video</button>
+                  {% if item.video_exists %}
+                  <a href="/video/{{ p.run_id }}" target="_blank" class="btn btn-secondary btn-sm">Preview MP4</a>
+                  <button type="button" class="btn btn-primary btn-sm" onclick="openReview('{{ p.run_id }}', false, this)">Review &amp; Approve</button>
+                  {% endif %}
+                  {% if p.status == 'approved' %}
+                  <button type="button" class="btn btn-success btn-sm" onclick="retryUpload('{{ p.run_id }}', this)">Retry YouTube Upload</button>
+                  {% endif %}
+                </div>
+                <button type="button" class="btn btn-danger-outline btn-sm" onclick="deleteRun('{{ p.run_id }}')">Delete</button>
+              </div>
+            </article>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No video runs yet</h3>
+              <p>Go to Overview and click <b>Generate Morning Short</b> to create your first video package.</p>
+            </div>
+          {% endif %}
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- SECTION 3: PUBLISHING LEDGER                                 -->
+        <!-- ============================================================ -->
+        <section id="section-ledger" class="section-panel" aria-label="Publishing Ledger">
+          <div class="card card-pad">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">Published Videos Ledger</h2>
+                <p class="card-subtitle">Every approved video uploaded through this studio, protected against duplicate uploads.</p>
+              </div>
+            </div>
+
+            {% if ledger_rows %}
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Preview</th>
+                    <th>Video Title</th>
+                    <th>Upload Date</th>
+                    <th>Visibility</th>
+                    <th>Status</th>
+                    <th>YouTube Studio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in ledger_rows %}
+                  <tr>
+                    <td>
+                      <div class="thumb-preview">
+                        {% if row.has_preview %}
+                        <video muted preload="metadata" src="/video/{{ row.run_id }}"></video>
+                        {% else %}
+                        <span>MP4</span>
+                        {% endif %}
+                      </div>
+                    </td>
+                    <td>
+                      <div style="font-weight:600; font-size:14px;">{{ row.title }}</div>
+                      <div class="mono" style="color:var(--color-muted-foreground); margin-top:2px;">
+                        {{ row.run_id }}
+                        {% if row.synthetic_media %}&bull; AI Content{% endif %}
+                      </div>
+                    </td>
+                    <td>{{ row.uploaded_at_display }}</td>
+                    <td>
+                      <span class="badge badge-{{ 'info' if row.privacy_status == 'private' else ('amber' if row.privacy_status == 'unlisted' else 'success') }}">
+                        {{ row.privacy_label }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="badge badge-{{ 'neutral' if row.is_mock else 'success' }}">
+                        {{ row.upload_status }}
+                      </span>
+                    </td>
+                    <td>
+                      <a href="{{ row.studio_url }}" target="_blank" class="btn btn-secondary btn-sm">
+                        <span class="mono">{{ row.youtube_video_id }}</span>
+                      </a>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+              <h3>No published videos yet</h3>
+              <p>Once you approve a video in the Review Portal, it appears here with its YouTube ID and visibility.</p>
+            </div>
+            {% endif %}
+          </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- SECTION 4: SCHEDULE & AUTOMATION                             -->
+        <!-- ============================================================ -->
+        <section id="section-schedule" class="section-panel" aria-label="Schedule and Automation">
+          <div class="grid-2" style="margin-bottom:24px;">
+            <div class="card card-pad">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Scheduler Status</h2>
+                  <p class="card-subtitle">Daily automated script &amp; prompt generation.</p>
+                </div>
+                <span class="badge badge-{{ 'success' if scheduler_info.active else 'amber' }}">
+                  {{ scheduler_info.status_label }}
+                </span>
+              </div>
+              <p style="font-size:14px; color:var(--color-foreground-secondary); margin-top:0;">
+                <b>Timezone:</b> {{ scheduler_info.timezone_label }}
+              </p>
+              <div class="timeline">
+                <div class="timeline-item" style="justify-content:space-between; align-items:center;">
+                  <div>
+                    <div style="font-weight:700;">Morning Run ({{ scheduler_info.morning_time }})</div>
+                    <div style="font-size:12px; color:var(--color-muted-foreground);">Next: {{ scheduler_info.morning_next.formatted }} ({{ scheduler_info.morning_next.relative }})</div>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="generateShort('morning', this)">Run Now</button>
+                </div>
+                <div class="timeline-item" style="justify-content:space-between; align-items:center;">
+                  <div>
+                    <div style="font-weight:700;">Evening Run ({{ scheduler_info.evening_time }})</div>
+                    <div style="font-size:12px; color:var(--color-muted-foreground);">Next: {{ scheduler_info.evening_next.formatted }} ({{ scheduler_info.evening_next.relative }})</div>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="generateShort('evening', this)">Run Now</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card card-pad">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Edit Daily Times</h2>
+                  <p class="card-subtitle">Times are evaluated in {{ scheduler_info.timezone_label }}.</p>
+                </div>
+              </div>
+              <form onsubmit="saveAllSettings(event, true)">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="sched-morning_time">Morning Time</label>
+                    <input id="sched-morning_time" class="input" type="time" value="{{ morning_hhmm }}">
+                  </div>
+                  <div class="field">
+                    <label for="sched-evening_time">Evening Time</label>
+                    <input id="sched-evening_time" class="input" type="time" value="{{ evening_hhmm }}">
+                  </div>
+                  <div class="field full">
+                    <label for="sched-timezone">Timezone</label>
+                    <input id="sched-timezone" class="input" type="text" value="{{ studio_cfg.timezone }}">
+                    <span class="field-hint">Default: Asia/Kolkata (IST)</span>
+                  </div>
+                  <div class="field full">
+                    <button type="submit" class="btn btn-primary">Update Schedule</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- SECTION 5: ACTIVITY & LOGS                                   -->
+        <!-- ============================================================ -->
+        <section id="section-activity" class="section-panel" aria-label="Activity and Logs">
+          <div class="card card-pad" style="margin-bottom:20px;">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">Activity Timeline</h2>
+                <p class="card-subtitle">Plain-language record of generated scripts, assembly status, and uploads.</p>
+              </div>
+            </div>
+
+            {% if timeline %}
+            <div class="timeline">
+              {% for ev in timeline %}
+              <div class="timeline-item">
+                <span class="dot dot-{{ ev.tone }}" style="margin-top:6px;"></span>
+                <div style="flex:1; min-width:0;">
+                  <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                    <strong style="font-size:14px;">{{ ev.event }}</strong>
+                    <span style="font-size:12px; color:var(--color-muted-foreground);">{{ ev.timestamp_display }}</span>
+                  </div>
+                  <div style="font-size:13px; color:var(--color-foreground-secondary); margin-top:2px;">{{ ev.title }}</div>
+                  <div style="font-size:12px; color:var(--color-muted-foreground); margin-top:2px;">{{ ev.detail }}</div>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+              <h3>No activity yet</h3>
+              <p>Pipeline events will appear here as soon as you generate a video.</p>
+            </div>
+            {% endif %}
+
+            <details class="inline-drawer" style="margin-top:18px;" ontoggle="if(this.open) refreshLogs()">
+              <summary>Technical Logs (for troubleshooting)</summary>
+              <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="refreshLogs()">Reload Logs</button>
+              </div>
+              <pre id="technicalLogViewer" class="log-box">{% if log_lines %}{{ log_lines|join('\n') }}{% else %}No log entries recorded yet.{% endif %}</pre>
+            </details>
+          </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- SECTION 6: SETTINGS & SYSTEM HEALTH                          -->
+        <!-- ============================================================ -->
+        <section id="section-settings" class="section-panel" aria-label="Settings and System Health">
+          <!-- Integration Health -->
+          <div class="card card-pad" style="margin-bottom:20px;">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">System Integrations &amp; Health</h2>
+                <p class="card-subtitle">Live status of connected services. Credentials and tokens are never displayed.</p>
+              </div>
+            </div>
+            <div class="grid-2">
+              {% for h in health_items %}
+              <div class="timeline-item" style="justify-content:space-between; align-items:flex-start;">
+                <div>
+                  <div style="font-weight:700; font-size:14px;">{{ h.name }}</div>
+                  <div style="font-size:12px; color:var(--color-muted-foreground); margin-top:3px;">{{ h.detail }}</div>
+                </div>
+                <span class="badge badge-{{ h.tone }}">{{ h.status }}</span>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+
+          <!-- Studio Settings Form -->
+          <div class="card card-pad">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">Studio, Niche &amp; Upload Settings</h2>
+                <p class="card-subtitle">All settings below are saved dynamically and immediately used for new Shorts.</p>
+              </div>
+            </div>
+
+            <div id="settingsErrorSummary" class="alert-error" role="alert" tabindex="-1" style="display:none;"></div>
+
+            <form onsubmit="saveAllSettings(event, false)">
+              <div class="form-grid">
+                <div class="field">
+                  <label for="cfg-studio_name">Studio Name</label>
+                  <input id="cfg-studio_name" class="input" type="text" value="{{ studio_cfg.studio_name }}" required>
+                </div>
+                <div class="field">
+                  <label for="cfg-niche">Channel Niche / Interest</label>
+                  <input id="cfg-niche" class="input" type="text" value="{{ studio_cfg.niche }}" required>
+                </div>
+                <div class="field full">
+                  <label for="cfg-niche_domains">Focus Topics &amp; Keywords</label>
+                  <input id="cfg-niche_domains" class="input" type="text" value="{{ studio_cfg.niche_domains }}">
+                </div>
+                <div class="field">
+                  <label for="cfg-audience_tone">Audience &amp; Tone</label>
+                  <input id="cfg-audience_tone" class="input" type="text" value="{{ studio_cfg.audience_tone }}">
+                </div>
+                <div class="field">
+                  <label for="cfg-default_cta">Default Call-to-Action</label>
+                  <input id="cfg-default_cta" class="input" type="text" value="{{ studio_cfg.default_cta }}">
+                </div>
+                <div class="field">
+                  <label for="cfg-category_id">YouTube Category</label>
+                  <select id="cfg-category_id" class="select">
+                    {% for cid, clabel in categories %}
+                    <option value="{{ cid }}" {{ 'selected' if studio_cfg.category_id|string == cid else '' }}>{{ clabel }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Target Video Duration (Seconds)</label>
+                  <div style="display:flex; gap:8px;">
+                    <input id="cfg-min_duration_seconds" class="input" type="number" min="30" max="44" value="{{ studio_cfg.min_duration_seconds }}" aria-label="Minimum duration seconds">
+                    <input id="cfg-max_duration_seconds" class="input" type="number" min="31" max="45" value="{{ studio_cfg.max_duration_seconds }}" aria-label="Maximum duration seconds">
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="cfg-groq_model_select">AI Script Model (Groq)</label>
+                  <select id="cfg-groq_model_select" class="select" onchange="document.getElementById('cfg-groq_model').value=this.value">
+                    {% for m in groq_models %}
+                    <option value="{{ m }}" {{ 'selected' if studio_cfg.groq_model == m else '' }}>{{ m }}</option>
+                    {% endfor %}
+                    {% if studio_cfg.groq_model not in groq_models %}
+                    <option value="{{ studio_cfg.groq_model }}" selected>{{ studio_cfg.groq_model }} (Custom)</option>
+                    {% endif %}
+                  </select>
+                  <input id="cfg-groq_model" class="input" type="text" value="{{ studio_cfg.groq_model }}" aria-label="Custom Groq model ID">
+                </div>
+                <div class="field">
+                  <label for="cfg-tts_voice_select">Voiceover Speaker (Edge-TTS)</label>
+                  <select id="cfg-tts_voice_select" class="select" onchange="document.getElementById('cfg-tts_voice').value=this.value">
+                    {% for vval, vlabel in tts_voices %}
+                    <option value="{{ vval }}" {{ 'selected' if studio_cfg.tts_voice == vval else '' }}>{{ vlabel }}</option>
+                    {% endfor %}
+                    {% if studio_cfg.tts_voice not in tts_voice_values %}
+                    <option value="{{ studio_cfg.tts_voice }}" selected>{{ studio_cfg.tts_voice }} (Custom)</option>
+                    {% endif %}
+                  </select>
+                  <input id="cfg-tts_voice" class="input" type="text" value="{{ studio_cfg.tts_voice }}" aria-label="Custom TTS voice ID">
+                </div>
+                <div class="field">
+                  <label for="cfg-default_privacy_status">Default YouTube Upload Visibility</label>
+                  <select id="cfg-default_privacy_status" class="select">
+                    <option value="private" {{ 'selected' if studio_cfg.default_privacy_status == 'private' else '' }}>Private (Review in YouTube Studio first)</option>
+                    <option value="unlisted" {{ 'selected' if studio_cfg.default_privacy_status == 'unlisted' else '' }}>Unlisted (Share via link)</option>
+                    <option value="public" {{ 'selected' if studio_cfg.default_privacy_status == 'public' else '' }}>Public (Publish immediately)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="cfg-timezone">Schedule Timezone</label>
+                  <input id="cfg-timezone" class="input" type="text" value="{{ studio_cfg.timezone }}">
+                </div>
+                <div class="field">
+                  <label for="cfg-morning_time">Morning Schedule</label>
+                  <input id="cfg-morning_time" class="input" type="time" value="{{ morning_hhmm }}" onchange="syncCronFromTime('morning')">
+                  <input id="cfg-morning_cron" class="input mono" type="text" value="{{ studio_cfg.morning_cron }}" aria-label="Morning cron expression">
+                </div>
+                <div class="field">
+                  <label for="cfg-evening_time">Evening Schedule</label>
+                  <input id="cfg-evening_time" class="input" type="time" value="{{ evening_hhmm }}" onchange="syncCronFromTime('evening')">
+                  <input id="cfg-evening_cron" class="input mono" type="text" value="{{ studio_cfg.evening_cron }}" aria-label="Evening cron expression">
+                </div>
+
+                <div class="field full">
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-synthetic_media_default" {{ 'checked' if studio_cfg.synthetic_media_default else '' }}>
+                    <span><b>AI-Generated Content Disclosure (Default ON):</b> Tick YouTube's altered/synthetic content flag automatically when uploading.</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-auto_assemble_on_upload" {{ 'checked' if studio_cfg.auto_assemble_on_upload else '' }}>
+                    <span><b>Auto-Assemble Video:</b> Automatically combine clips and generate voiceover as soon as all scene clips are uploaded.</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-auto_open_review_on_assemble" {{ 'checked' if studio_cfg.auto_open_review_on_assemble else '' }}>
+                    <span><b>Auto-Open Review Screen:</b> Open the Review &amp; Approval portal automatically once assembly finishes.</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-send_email_on_ready" {{ 'checked' if studio_cfg.send_email_on_ready else '' }}>
+                    <span><b>Email Notifications:</b> Send an approval link email when a video is ready to review.</span>
+                  </label>
+                </div>
+
+                <div class="field full" style="align-items:flex-end;">
+                  <button type="submit" class="btn btn-primary">Save Studio Settings</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Prompts Modal -->
+  <div id="briefModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <h3 id="modalTitle" style="margin:0; font-size:16px;">Visual Prompts</h3>
+        <button id="modalCloseBtn" type="button" class="btn btn-secondary btn-sm" onclick="closeModal()" aria-label="Close prompts modal">Close</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="modal-foot">
+        <span style="font-size:12px; color:var(--color-muted-foreground);">Copy these prompts into Google Flow (9:16 portrait mode).</span>
+        <button type="button" class="btn btn-primary btn-sm" onclick="copyBrief()">Copy All Prompts</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    window.__STUDIO_CONFIG__ = {
+      autoAssemble: {{ 'true' if studio_cfg.auto_assemble_on_upload else 'false' }},
+      autoOpenReview: {{ 'true' if studio_cfg.auto_open_review_on_assemble else 'false' }}
+    };
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

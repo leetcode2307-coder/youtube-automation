@@ -101,3 +101,16 @@ def test_headless_youtube_requires_token_when_secrets_present(tmp_path, monkeypa
 
     with pytest.raises(RuntimeError, match="youtube-auth"):
         get_youtube_service(mock=False, interactive=False)
+
+
+def test_youtube_upload_respects_privacy_and_synthetic_media_flags(ready_package):
+    run_id = ready_package.run_id
+    record = upload_video_to_youtube(
+        run_id,
+        force_mock=True,
+        privacy_override="unlisted",
+        synthetic_media_override=True,
+    )
+    assert record.privacy_status == "unlisted"
+    assert record.response_json["containsSyntheticMedia"] is True
+    assert storage.load_package(run_id).status == "uploaded"

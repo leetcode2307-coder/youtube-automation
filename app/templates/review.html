@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Review &amp; Authorize: {{ package.metadata.title }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="review-page">
+    <div class="card card-pad" style="margin-bottom:20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+          <span class="badge badge-purple">Waiting for your approval</span>
+          <span class="badge badge-neutral">{{ package.niche or studio_cfg.niche }}</span>
+          <span class="mono" style="color:var(--color-muted-foreground);">{{ package.run_id }}</span>
+        </div>
+        <h1 style="margin:0; font-size:20px;">Review & Approval Gate</h1>
+      </div>
+      <a href="/#videos" class="btn btn-secondary btn-sm">Back to Studio</a>
+    </div>
+
+    <div class="review-grid">
+      <!-- Left Column: Vertical Video Preview + Approval Form -->
+      <div>
+        <div class="video-frame">
+          <video controls preload="metadata">
+            <source src="/video/{{ package.run_id }}" type="video/mp4">
+            Your browser does not support HTML5 video playback.
+          </video>
+          <div class="video-caption">
+            1080 &times; 1920 (9:16) &bull; {{ package.total_duration_seconds }}s &bull; H.264 / AAC
+          </div>
+        </div>
+
+        <div class="card card-pad" style="margin-top:16px;">
+          <form method="POST" action="/approve/{{ package.run_id }}" onsubmit="const b=this.querySelector('button[type=submit]'); b.disabled=true; b.textContent='Uploading to YouTube...';">
+            <input type="hidden" name="token" value="{{ token }}">
+            <input type="hidden" name="synthetic_media_present" value="1">
+
+            <div class="field" style="margin-bottom:12px;">
+              <label for="privacy_status">YouTube Visibility</label>
+              <select id="privacy_status" name="privacy_status" class="select">
+                <option value="private" {{ 'selected' if selected_privacy == 'private' else '' }}>Private (Review in YouTube Studio first)</option>
+                <option value="unlisted" {{ 'selected' if selected_privacy == 'unlisted' else '' }}>Unlisted (Share via link)</option>
+                <option value="public" {{ 'selected' if selected_privacy == 'public' else '' }}>Public (Publish immediately)</option>
+              </select>
+            </div>
+
+            <div class="field" style="margin-bottom:12px;">
+              <label for="title">Final Video Title</label>
+              <input id="title" name="title" type="text" maxlength="100" class="input" value="{{ package.metadata.title }}">
+            </div>
+
+            <label class="checkbox-row" style="margin-bottom:14px;">
+              <input type="checkbox" name="synthetic_media" value="true" {% if is_synthetic %}checked{% endif %}>
+              <span><b>AI-Generated Content:</b> Disclose altered or synthetic media on YouTube.</span>
+            </label>
+
+            <button type="submit" class="btn btn-success" style="width:100%;">
+              Approve &amp; Upload to YouTube
+            </button>
+          </form>
+
+          <form method="POST" action="/reject/{{ package.run_id }}" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--color-border);">
+            <input type="hidden" name="token" value="{{ token }}">
+            <div class="field" style="margin-bottom:8px;">
+              <label for="reject_comments" class="sr-only">Rejection reason (optional)</label>
+              <input id="reject_comments" name="comments" type="text" class="input" placeholder="Optional rejection note...">
+            </div>
+            <button type="submit" class="btn btn-danger-outline" style="width:100%;">
+              Reject &amp; Cancel Upload
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Right Column: Metadata & Scene Breakdown -->
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="card card-pad">
+          <h2 style="margin:0 0 8px 0; font-size:20px;">{{ package.metadata.title }}</h2>
+          <p style="margin:0 0 6px 0; font-size:14px; color:var(--color-foreground-secondary);"><b>Topic:</b> {{ package.topic }}</p>
+          <p style="margin:0 0 10px 0; font-size:14px; color:var(--color-muted-foreground);"><b>Opening Hook:</b> <i>"{{ package.hook }}"</i></p>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            {% for h in package.metadata.hashtags %}
+            <span class="badge badge-info">{{ h }}</span>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="card card-pad">
+          <h3 class="card-title" style="margin-bottom:8px;">YouTube Description</h3>
+          <p style="margin:0; white-space:pre-wrap; font-size:14px; color:var(--color-foreground-secondary);">{{ package.metadata.description }}</p>
+        </div>
+
+        <div class="card card-pad">
+          <h3 class="card-title" style="margin-bottom:8px;">Keyword Tags</h3>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            {% for t in package.metadata.tags %}
+            <span class="badge badge-neutral">{{ t }}</span>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="card card-pad">
+          <h3 class="card-title" style="margin-bottom:10px;">Scene Breakdown ({{ package.scenes|length }} scenes)</h3>
+          {% for s in package.scenes %}
+          <div class="scene-card">
+            <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+              <strong style="font-size:13px;">Scene {{ s.scene_number }} &mdash; {{ s.on_screen_text }}</strong>
+              <span class="mono" style="color:var(--color-muted-foreground);">{{ s.duration_seconds }}s</span>
+            </div>
+            <div style="font-size:13px; color:var(--color-foreground-secondary); margin-bottom:4px;">{{ s.narration }}</div>
+            <div class="mono" style="font-size:11px; color:var(--color-muted-foreground);">Prompt: {{ s.visual_prompt }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

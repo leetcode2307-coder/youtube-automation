@@ -57,6 +57,7 @@ def create_approval_record(run_id: str, approver_email: Optional[str] = None) ->
 def build_approval_email_html(package: ProductionPackage, review_url: str) -> str:
     """Render a clean, responsive HTML email for video review and approval."""
     esc = html.escape
+    studio_cfg = storage.get_studio_config()
     scenes_html = "".join(
         f"<tr>"
         f"<td style='padding:8px;border:1px solid #ddd;'>Scene {s.scene_number} ({s.duration_seconds}s)</td>"
@@ -126,7 +127,7 @@ def build_approval_email_html(package: ProductionPackage, review_url: str) -> st
           </div>
         </div>
         <div class="footer">
-          Automated YouTube Shorts Production System &bull; Private Approval Gate
+          {esc(studio_cfg.studio_name)} &bull; Approval Gate
         </div>
       </div>
     </body>

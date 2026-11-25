@@ -1,12 +1,13 @@
 import json
+import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config import settings
 from app.logging_config import logger
-from app.models import ApprovalRecord, ProductionPackage, RunStatus, UploadRecord
+from app.models import ApprovalRecord, ProductionPackage, RunStatus, StudioConfig, UploadRecord
 
 _LOCK = threading.RLock()
 
@@ -145,6 +146,7 @@ class StorageManager:
         """Lookup an upload record by run_id to prevent duplicate uploads."""
         with _LOCK:
             try:
+                self._init_file_if_missing(settings.UPLOAD_LEDGER_FILE, {})
                 with open(settings.UPLOAD_LEDGER_FILE, "r", encoding="utf-8") as f:
                     ledger = json.load(f)
                 data = ledger.get(run_id)
@@ -158,15 +160,83 @@ class StorageManager:
         """Record a successful upload into the idempotency ledger."""
         with _LOCK:
             try:
+                self._init_file_if_missing(settings.UPLOAD_LEDGER_FILE, {})
                 with open(settings.UPLOAD_LEDGER_FILE, "r", encoding="utf-8") as f:
                     ledger = json.load(f)
             except Exception:
                 ledger = {}
 
             ledger[record.run_id] = record.model_dump()
+            settings.UPLOAD_LEDGER_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(settings.UPLOAD_LEDGER_FILE, "w", encoding="utf-8") as f:
                 json.dump(ledger, f, indent=2)
             logger.info("Recorded upload in ledger: run %s -> video %s", record.run_id, record.youtube_video_id)
+
+    # ---------------- Studio Configuration (UI-editable) ----------------
+
+    @staticmethod
+    def default_studio_config() -> StudioConfig:
+        """Build default StudioConfig from environment/Settings values."""
+        return StudioConfig(
+            studio_name=settings.STUDIO_NAME,
+            niche=settings.DEFAULT_NICHE,
+            niche_domains=settings.DEFAULT_NICHE_DOMAINS,
+            audience_tone=settings.DEFAULT_AUDIENCE_TONE,
+            default_cta=settings.DEFAULT_CTA,
+            category_id=settings.DEFAULT_YOUTUBE_CATEGORY_ID,
+            default_privacy_status=settings.DEFAULT_PRIVACY_STATUS,
+            synthetic_media_default=settings.DEFAULT_SYNTHETIC_MEDIA,
+            groq_model=settings.GROQ_MODEL,
+            tts_voice=settings.TTS_VOICE,
+            morning_cron=settings.MORNING_CRON,
+            evening_cron=settings.EVENING_CRON,
+            timezone=settings.TIMEZONE,
+            min_duration_seconds=settings.MIN_VIDEO_DURATION,
+            max_duration_seconds=settings.MAX_VIDEO_DURATION,
+        )
+
+    def get_studio_config(self) -> StudioConfig:
+        """Load persisted UI studio settings or initialize from Settings defaults."""
+        with _LOCK:
+            path = settings.STUDIO_SETTINGS_FILE
+            if not path.exists():
+                cfg = self.default_studio_config()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(cfg.model_dump_json(indent=2))
+                return cfg
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return StudioConfig.model_validate(data)
+            except Exception as e:
+                logger.warning("Failed to parse studio settings (%s); falling back to defaults.", e)
+                return self.default_studio_config()
+
+    def save_studio_config(self, config: StudioConfig) -> StudioConfig:
+        """Persist updated UI studio settings."""
+        with _LOCK:
+            path = settings.STUDIO_SETTINGS_FILE
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(config.model_dump_json(indent=2))
+            logger.info("Saved studio configuration (niche='%s', privacy='%s')", config.niche, config.default_privacy_status)
+            return config
+
+    def delete_package(self, run_id: str) -> bool:
+        """Delete a production package and its local export/final folders."""
+        with _LOCK:
+            package_path = settings.PACKAGES_DIR / f"{run_id}.json"
+            existed = package_path.exists()
+            if existed:
+                package_path.unlink()
+            export_dir = settings.FLOW_EXPORTS_DIR / run_id
+            if export_dir.exists():
+                shutil.rmtree(export_dir, ignore_errors=True)
+            final_dir = settings.FINAL_OUTPUT_DIR / run_id
+            if final_dir.exists():
+                shutil.rmtree(final_dir, ignore_errors=True)
+            return existed
 
 
 storage = StorageManager()

@@ -15,6 +15,18 @@ class Settings(BaseSettings):
     # LLM Settings (Groq)
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MAX_TOKENS: int = 900
+
+    # Default Studio & Niche Settings (Overridable via UI in data/studio_settings.json)
+    STUDIO_NAME: str = "AI Engineering Shorts Studio"
+    DEFAULT_NICHE: str = "AI Engineering"
+    DEFAULT_NICHE_DOMAINS: str = "LLMs, RAG, AI Agents, Model Context Protocol, Inference Optimization, Vector Databases"
+    DEFAULT_AUDIENCE_TONE: str = "Clear, engaging, high-retention storytelling"
+    DEFAULT_CTA: str = "Subscribe for more daily insights!"
+    DEFAULT_YOUTUBE_CATEGORY_ID: str = "28"
+    DEFAULT_SYNTHETIC_MEDIA: bool = True
+    MIN_VIDEO_DURATION: int = 30
+    MAX_VIDEO_DURATION: int = 45
 
     # Timezone & Scheduling
     TIMEZONE: str = "Asia/Kolkata"
@@ -30,6 +42,7 @@ class Settings(BaseSettings):
     TOPIC_HISTORY_FILE: Path = Path("data/topic_history.json")
     UPLOAD_LEDGER_FILE: Path = Path("data/upload_ledger.json")
     APPROVALS_FILE: Path = Path("data/approvals.json")
+    STUDIO_SETTINGS_FILE: Path = Path("data/studio_settings.json")
     LOGS_DIR: Path = Path("logs")
 
     # Approval & Web Server
@@ -53,6 +66,7 @@ class Settings(BaseSettings):
     YOUTUBE_TOKEN_FILE: Path = Path("token.json")
     YOUTUBE_CLIENT_SECRET_JSON: str = ""
     YOUTUBE_TOKEN_JSON: str = ""
+    YOUTUBE_MOCK_MODE: bool = False
     DEFAULT_PRIVACY_STATUS: Literal["private", "unlisted", "public"] = "private"
 
     # TTS & FFmpeg Settings
@@ -77,6 +91,8 @@ class Settings(BaseSettings):
                 self.UPLOAD_LEDGER_FILE = self.DATA_DIR / "upload_ledger.json"
             if "APPROVALS_FILE" not in os.environ and self.APPROVALS_FILE == Path("data/approvals.json"):
                 self.APPROVALS_FILE = self.DATA_DIR / "approvals.json"
+            if "STUDIO_SETTINGS_FILE" not in os.environ and self.STUDIO_SETTINGS_FILE == Path("data/studio_settings.json"):
+                self.STUDIO_SETTINGS_FILE = self.DATA_DIR / "studio_settings.json"
 
         # Render / cloud platform PORT and RENDER_EXTERNAL_URL support
         if "PORT" in os.environ and "SERVER_PORT" not in os.environ:

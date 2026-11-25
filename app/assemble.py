@@ -53,13 +53,14 @@ def assemble_video(run_id: str) -> Path:
         raise ValueError(error_msg)
 
     # 2. Check or generate voiceover audio and subtitles
+    studio_cfg = storage.get_studio_config()
     voiceover_path = run_export_dir / "voiceover.mp3"
     srt_path = run_export_dir / "captions.srt"
 
     if not voiceover_path.exists():
-        logger.info("Voiceover file not found in %s; generating with Edge-TTS...", run_export_dir)
+        logger.info("Voiceover file not found in %s; generating with Edge-TTS (%s)...", run_export_dir, studio_cfg.tts_voice)
         try:
-            generate_speech_sync(package.narration_full, voiceover_path, srt_path)
+            generate_speech_sync(package.narration_full, voiceover_path, srt_path, voice=studio_cfg.tts_voice)
         except Exception as e:
             error_msg = f"TTS voiceover generation failed: {e}"
             storage.update_package_status(run_id, "failed", error_msg)
@@ -71,9 +72,10 @@ def assemble_video(run_id: str) -> Path:
     # 3. Probe clip and voiceover durations so audio never truncates or gets replaced by silent clip audio
     total_video_duration = sum(_probe_duration(clip) for clip in sorted_clips)
     audio_duration = _probe_duration(voiceover_path)
+    max_dur_limit = float(studio_cfg.max_duration_seconds)
     pad_extra = 0.0
-    if audio_duration > total_video_duration > 0 and total_video_duration < 45.0:
-        pad_extra = min(audio_duration - total_video_duration, 45.0 - total_video_duration)
+    if audio_duration > total_video_duration > 0 and total_video_duration < max_dur_limit:
+        pad_extra = min(audio_duration - total_video_duration, max_dur_limit - total_video_duration)
 
     # 4. Build filter_complex to normalize heterogeneous clips to 1080x1920 30fps
     #    and map the voiceover track explicitly with trailing silence padding.
@@ -131,7 +133,11 @@ def assemble_video(run_id: str) -> Path:
     logger.info("Saved checksum: %s (%s)", sha256_path, file_sha256)
 
     # 6. Validate final assembled media
-    media_ok, message, info = validate_final_media(final_mp4_path)
+    media_ok, message, info = validate_final_media(
+        final_mp4_path,
+        expected_min_duration=float(studio_cfg.min_duration_seconds) - 0.5,
+        expected_max_duration=float(studio_cfg.max_duration_seconds) + 0.5,
+    )
     if not media_ok:
         logger.error("Media validation failed for %s: %s", run_id, message)
         storage.update_package_status(run_id, "failed", message)

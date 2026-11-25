@@ -11,15 +11,16 @@ from app.models import ProductionPackage, SlotType
 from app.storage import storage
 
 
-def generate_run_id(slot: SlotType) -> Tuple[str, str, str]:
-    """Generate unique run_id, UTC timestamp, and local IST timestamp string."""
+def generate_run_id(slot: SlotType, tz_name: Optional[str] = None) -> Tuple[str, str, str]:
+    """Generate unique run_id, UTC timestamp, and local timestamp string."""
     now_utc = datetime.now(timezone.utc)
+    selected_tz = tz_name or settings.TIMEZONE
     try:
-        ist_zone = ZoneInfo(settings.TIMEZONE)
+        local_zone = ZoneInfo(selected_tz)
     except Exception:
-        ist_zone = timezone.utc
+        local_zone = timezone.utc
 
-    now_local = now_utc.astimezone(ist_zone)
+    now_local = now_utc.astimezone(local_zone)
     date_str = now_local.strftime("%Y%m%d")
     short_suffix = secrets.token_hex(3)
     run_id = f"{date_str}_{slot}_{short_suffix}"
@@ -27,11 +28,18 @@ def generate_run_id(slot: SlotType) -> Tuple[str, str, str]:
     return run_id, now_utc.isoformat(), now_local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def run_content_pipeline(slot: SlotType, force_mock: bool = False) -> ProductionPackage:
+def run_content_pipeline(
+    slot: SlotType,
+    force_mock: bool = False,
+    custom_topic: Optional[str] = None,
+    niche_override: Optional[str] = None,
+) -> ProductionPackage:
     """Execute the LangGraph content generation pipeline for a specific slot."""
     settings.ensure_directories()
-    run_id, created_at_utc, scheduled_at_local = generate_run_id(slot)
-    logger.info("Starting content generation pipeline: Run ID=%s, Slot=%s", run_id, slot)
+    studio_cfg = storage.get_studio_config()
+    run_id, created_at_utc, scheduled_at_local = generate_run_id(slot, studio_cfg.timezone)
+    active_niche = (niche_override or "").strip() or studio_cfg.niche
+    logger.info("Starting content generation pipeline: Run ID=%s, Slot=%s, Niche=%s", run_id, slot, active_niche)
 
     # 1. Fetch recent topics from history to prevent duplication
     history = storage.get_topic_history()
@@ -43,6 +51,19 @@ def run_content_pipeline(slot: SlotType, force_mock: bool = False) -> Production
         "created_at_utc": created_at_utc,
         "scheduled_at_local": scheduled_at_local,
         "recent_topics": recent_topics,
+        "niche": active_niche,
+        "niche_domains": studio_cfg.niche_domains,
+        "audience_tone": studio_cfg.audience_tone,
+        "default_cta": studio_cfg.default_cta,
+        "category_id": studio_cfg.category_id,
+        "groq_model": studio_cfg.groq_model,
+        "min_duration_seconds": studio_cfg.min_duration_seconds,
+        "max_duration_seconds": studio_cfg.max_duration_seconds,
+        "min_scenes": studio_cfg.min_scenes,
+        "max_scenes": studio_cfg.max_scenes,
+        "synthetic_media_default": studio_cfg.synthetic_media_default,
+        "privacy_status": studio_cfg.default_privacy_status,
+        "custom_topic": (custom_topic or "").strip(),
         "retry_count": 0,
         "validation_errors": [],
         "force_mock": force_mock,

@@ -42,6 +42,7 @@ data/topic_history.json
 data/upload_ledger.json
 data/approvals.json
 data/youtube_token.json
+data/studio_settings.json
 logs/
 *.log
 

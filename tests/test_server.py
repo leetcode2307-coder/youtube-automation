@@ -22,6 +22,12 @@ def test_package(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
     monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
     monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+    monkeypatch.setattr(settings, "STUDIO_SETTINGS_FILE", test_data / "studio_settings.json")
+    monkeypatch.setattr(settings, "YOUTUBE_CLIENT_SECRETS_FILE", test_data / "client_secret.json")
+    monkeypatch.setattr(settings, "YOUTUBE_TOKEN_FILE", test_data / "token.json")
+    monkeypatch.setattr(settings, "YOUTUBE_CLIENT_SECRET_JSON", "")
+    monkeypatch.setattr(settings, "YOUTUBE_TOKEN_JSON", "")
+    monkeypatch.setattr(settings, "YOUTUBE_MOCK_MODE", True)
     monkeypatch.setattr(settings, "SMTP_USERNAME", "")
 
     settings.ensure_directories()
@@ -199,3 +205,151 @@ def test_api_generate_mock(tmp_path, monkeypatch):
     data = res.json()
     assert "evening" in data["run_id"]
     assert 30 <= data["duration"] <= 45
+
+
+def test_studio_settings_niche_package_edit_and_privacy_approval(test_package):
+    run_id = test_package.run_id
+
+    # 1. Update Studio & Niche settings via API (custom niche, public default, AI content enabled)
+    new_settings = {
+        "studio_name": "Space & Physics Studio",
+        "niche": "Astrophysics & Space Exploration",
+        "niche_domains": "Black Holes, Exoplanets, James Webb Telescope",
+        "audience_tone": "Mind-blowing visual storytelling",
+        "default_cta": "Follow for daily space mysteries!",
+        "category_id": "27",
+        "default_privacy_status": "unlisted",
+        "synthetic_media_default": True,
+        "groq_model": "llama-3.3-70b-versatile",
+        "tts_voice": "en-US-AriaNeural",
+        "morning_cron": "15 8 * * *",
+        "evening_cron": "45 18 * * *",
+        "timezone": "Asia/Kolkata",
+        "min_duration_seconds": 30,
+        "max_duration_seconds": 45,
+        "min_scenes": 4,
+        "max_scenes": 6,
+        "auto_assemble_on_upload": True,
+        "auto_open_review_on_assemble": True,
+        "send_email_on_ready": False,
+    }
+    res_set = client.post("/api/settings", json=new_settings)
+    assert res_set.status_code == 200
+    assert res_set.json()["settings"]["niche"] == "Astrophysics & Space Exploration"
+
+    # Dashboard reflects updated non-hardcoded settings
+    res_dash = client.get("/")
+    assert res_dash.status_code == 200
+    assert "Space &amp; Physics Studio" in res_dash.text
+    assert "Astrophysics &amp; Space Exploration" in res_dash.text
+    assert "en-US-AriaNeural" in res_dash.text
+
+    # 2. Generate a mock run using custom niche & custom topic
+    res_gen = client.post("/api/generate?slot=morning&mock=true&niche=Personal%20Finance&topic=Index%20Fund%20Compounding")
+    assert res_gen.status_code == 200
+    gen_data = res_gen.json()
+    assert gen_data["niche"] == "Personal Finance"
+    assert gen_data["topic"] == "Index Fund Compounding"
+
+    # 3. Edit package metadata, privacy, and synthetic flag via UI API
+    res_edit = client.post(
+        f"/api/package/{run_id}",
+        json={
+            "title": "Updated Custom Short Title",
+            "description": "Updated description from the Studio UI editor.",
+            "tags": ["space", "physics", "astronomy", "shorts"],
+            "hashtags": ["Space", "#Astrophysics", "#Science"],
+            "privacy_status": "public",
+            "category_id": "27",
+            "synthetic_media_disclosure": True,
+        },
+    )
+    assert res_edit.status_code == 200
+    updated_pkg = storage.load_package(run_id)
+    assert updated_pkg.privacy_status == "public"
+    assert updated_pkg.metadata.category_id == "27"
+    assert updated_pkg.metadata.hashtags == ["#Space", "#Astrophysics", "#Science"]
+
+    # 4. Approve via Review Portal with explicit privacy & AI-generated checkbox ticked
+    res_ready = client.post(f"/ready/{run_id}")
+    assert res_ready.status_code == 200
+    raw_token = res_ready.json()["review_url"].split("token=")[1]
+
+    res_portal = client.get(f"/review/{run_id}?token={raw_token}")
+    assert res_portal.status_code == 200
+    assert 'name="synthetic_media" value="true" checked' in res_portal.text
+
+    res_approve = client.post(
+        f"/approve/{run_id}",
+        data={
+            "token": raw_token,
+            "privacy_status": "public",
+            "synthetic_media_present": "1",
+            "synthetic_media": "true",
+        },
+    )
+    assert res_approve.status_code == 200
+    assert "PUBLIC" in res_approve.text
+
+    ledger_rec = storage.get_upload_record(run_id)
+    assert ledger_rec is not None
+    assert ledger_rec.privacy_status == "public"
+    assert ledger_rec.response_json.get("containsSyntheticMedia") is True
+
+
+def test_static_assets_logs_and_scheduler_summary(test_package):
+    res_css = client.get("/static/styles.css")
+    assert res_css.status_code == 200
+    assert "--color-primary" in res_css.text
+
+    res_js = client.get("/static/app.js")
+    assert res_js.status_code == 200
+    assert "navigateTo" in res_js.text
+
+    res_logs = client.get("/api/logs?limit=20")
+    assert res_logs.status_code == 200
+    assert isinstance(res_logs.json()["lines"], list)
+
+    res_status = client.get("/api/status")
+    assert res_status.status_code == 200
+    sched = res_status.json()["scheduler"]
+    assert "timezone_label" in sched
+    assert "soonest" in sched
+
+
+def test_favicon_and_video_range_headers(test_package):
+    res_icon = client.get("/favicon.ico")
+    assert res_icon.status_code == 200
+    assert "svg" in res_icon.headers.get("content-type", "").lower()
+
+    res_vid = client.get(f"/video/{test_package.run_id}")
+    assert res_vid.status_code == 200
+    assert res_vid.headers.get("accept-ranges") == "bytes"
+    assert res_vid.headers.get("cache-control") == "no-store"
+
+
+def test_windows_asyncio_connection_reset_filter():
+    import asyncio
+    from app.server import _install_windows_asyncio_exception_filter
+
+    loop = asyncio.new_event_loop()
+    try:
+        forwarded = []
+        loop.set_exception_handler(lambda _l, ctx: forwarded.append(ctx))
+        _install_windows_asyncio_exception_filter(loop)
+        handler = loop.get_exception_handler()
+
+        benign = ConnectionResetError("client closed")
+        benign.winerror = 10054
+        handler(loop, {
+            "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost",
+            "exception": benign,
+        })
+        assert forwarded == []
+
+        real_err = RuntimeError("unexpected failure")
+        handler(loop, {"message": "Unhandled error", "exception": real_err})
+        assert len(forwarded) == 1
+        assert forwarded[0]["exception"] is real_err
+    finally:
+        loop.close()

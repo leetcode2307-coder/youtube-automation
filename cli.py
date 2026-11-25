@@ -92,9 +92,10 @@ def cmd_youtube_auth(args):
 
 def cmd_schedule(args):
     """Start APScheduler daily automated runs."""
-    print(f"\nStarting APScheduler service in {settings.TIMEZONE}...")
-    print(f"  Morning slot: 07:00 AM IST")
-    print(f"  Evening slot: 04:30 PM (16:30) IST")
+    studio_cfg = storage.get_studio_config()
+    print(f"\nStarting APScheduler service in {studio_cfg.timezone}...")
+    print(f"  Morning slot cron: {studio_cfg.morning_cron}")
+    print(f"  Evening slot cron: {studio_cfg.evening_cron}")
     start_scheduler_forever()
 
 

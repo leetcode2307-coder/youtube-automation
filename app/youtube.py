@@ -147,9 +147,14 @@ def get_youtube_service(mock: bool = False, interactive: bool = False):
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_video_to_youtube(run_id: str, force_mock: bool = False) -> UploadRecord:
+def upload_video_to_youtube(
+    run_id: str,
+    force_mock: bool = False,
+    privacy_override: Optional[str] = None,
+    synthetic_media_override: Optional[bool] = None,
+) -> UploadRecord:
     """
-    Upload an approved video to YouTube privately, guarded by an idempotency ledger.
+    Upload an approved video to YouTube (private/unlisted/public), guarded by an idempotency ledger.
     If the video has already been uploaded, returns the recorded video ID without duplicate uploads.
     """
     package = storage.load_package(run_id)
@@ -161,6 +166,7 @@ def upload_video_to_youtube(run_id: str, force_mock: bool = False) -> UploadReco
         raise FileNotFoundError(f"Assembled video file {final_mp4} not found.")
 
     video_sha256 = calculate_sha256(final_mp4)
+    studio_cfg = storage.get_studio_config()
 
     # 1. IDEMPOTENCY CHECK: Guard against duplicate uploads
     existing_upload = storage.get_upload_record(run_id)
@@ -171,13 +177,25 @@ def upload_video_to_youtube(run_id: str, force_mock: bool = False) -> UploadReco
         )
         return existing_upload
 
+    # Resolve privacy & synthetic media disclosure
+    raw_privacy = (privacy_override or package.privacy_status or studio_cfg.default_privacy_status or "private").lower()
+    privacy_status = raw_privacy if raw_privacy in ("private", "unlisted", "public") else "private"
+    is_synthetic = (
+        bool(synthetic_media_override)
+        if synthetic_media_override is not None
+        else bool(package.metadata.synthetic_media_disclosure)
+    )
+    target_run_status = "uploaded_private" if privacy_status == "private" else "uploaded"
+
     # 2. Build metadata snippet
     title = package.metadata.title[:100]
-    description = (
-        f"{package.metadata.description}\n\n"
-        f"{' '.join(package.metadata.hashtags)}\n\n"
-        f"Altered or Synthetic Content: This video contains AI-generated visual animations."
-    )
+    hashtags_str = " ".join(package.metadata.hashtags)
+    description_parts = [package.metadata.description.strip()]
+    if hashtags_str:
+        description_parts.append(hashtags_str)
+    if is_synthetic:
+        description_parts.append("Altered or Synthetic Content: This video contains AI-generated visual animations.")
+    description = "\n\n".join(part for part in description_parts if part)
     tags = package.metadata.tags
 
     body = {
@@ -190,34 +208,38 @@ def upload_video_to_youtube(run_id: str, force_mock: bool = False) -> UploadReco
             "defaultAudioLanguage": "en",
         },
         "status": {
-            "privacyStatus": settings.DEFAULT_PRIVACY_STATUS,  # Strictly private initially
+            "privacyStatus": privacy_status,
             "selfDeclaredMadeForKids": False,
             "embeddable": True,
+            "containsSyntheticMedia": is_synthetic,
         }
     }
 
     # 3. Handle Mock / Dry-Run Mode
-    service = get_youtube_service(mock=force_mock)
+    service = get_youtube_service(mock=force_mock or settings.YOUTUBE_MOCK_MODE)
     if service is None:
         mock_video_id = f"mock_yt_{run_id}"
         logger.info(
-            "MOCK/DRY-RUN: Simulated YouTube private upload for run %s -> ID: %s",
-            run_id, mock_video_id
+            "MOCK/DRY-RUN: Simulated YouTube %s upload (synthetic=%s) for run %s -> ID: %s",
+            privacy_status, is_synthetic, run_id, mock_video_id
         )
         record = UploadRecord(
             run_id=run_id,
             video_sha256=video_sha256,
             youtube_video_id=mock_video_id,
-            privacy_status=settings.DEFAULT_PRIVACY_STATUS,
+            privacy_status=privacy_status,
             uploaded_at_utc=datetime.now(timezone.utc).isoformat(),
-            response_json={"status": "mock_upload", "title": title}
+            response_json={"status": "mock_upload", "title": title, "containsSyntheticMedia": is_synthetic}
         )
         storage.record_upload(record)
-        storage.update_package_status(run_id, "uploaded_private")
+        storage.update_package_status(run_id, target_run_status)
         return record
 
     # 4. Live YouTube Upload via Resumable Media
-    logger.info("Initiating live YouTube upload for %s (Privacy: %s)...", run_id, settings.DEFAULT_PRIVACY_STATUS)
+    logger.info(
+        "Initiating live YouTube upload for %s (Privacy: %s, Synthetic: %s)...",
+        run_id, privacy_status, is_synthetic
+    )
     media = MediaFileUpload(
         str(final_mp4),
         mimetype="video/mp4",
@@ -238,18 +260,18 @@ def upload_video_to_youtube(run_id: str, force_mock: bool = False) -> UploadReco
             logger.info("Uploaded %d%% of %s...", int(status.progress() * 100), final_mp4.name)
 
     video_id = response.get("id", "unknown_video_id")
-    logger.info("Upload completed successfully! YouTube Video ID: %s", video_id)
+    logger.info("Upload completed successfully! YouTube Video ID: %s (%s)", video_id, privacy_status)
 
     record = UploadRecord(
         run_id=run_id,
         video_sha256=video_sha256,
         youtube_video_id=video_id,
-        privacy_status=settings.DEFAULT_PRIVACY_STATUS,
+        privacy_status=privacy_status,
         uploaded_at_utc=datetime.now(timezone.utc).isoformat(),
         response_json=response
     )
 
     # Record in idempotency ledger & update package status
     storage.record_upload(record)
-    storage.update_package_status(run_id, "uploaded_private")
+    storage.update_package_status(run_id, target_run_status)
     return record
