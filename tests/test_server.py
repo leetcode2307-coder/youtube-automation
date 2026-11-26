@@ -76,6 +76,7 @@ def test_health():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert client.head("/health").status_code == 200
 
 
 def test_approval_workflow_and_replay_protection(test_package):
@@ -134,7 +135,11 @@ def test_invalid_and_expired_tokens(test_package):
 
 
 def test_dashboard_ui_and_api(test_package):
-    # Test dashboard HTML render
+    # Test dashboard HTML render (including HEAD probes used by Render/health checks)
+    res_head = client.head("/")
+    assert res_head.status_code == 200
+    assert client.head("/dashboard").status_code == 200
+
     res_dash = client.get("/")
     assert res_dash.status_code == 200
     assert "AI Engineering Shorts Studio" in res_dash.text
@@ -204,6 +209,37 @@ def test_api_generate_mock(tmp_path, monkeypatch):
     assert res.status_code == 200
     data = res.json()
     assert "evening" in data["run_id"]
+    assert 30 <= data["duration"] <= 45
+
+
+def test_api_generate_non_mock_exercises_get_llm(tmp_path, monkeypatch):
+    """Regression test for POST /api/generate with configured GROQ_API_KEY (non-mock)."""
+    from langchain_groq import ChatGroq
+    from app.llm import MockStructuredOutput
+
+    test_data = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+    monkeypatch.setattr(settings, "STUDIO_SETTINGS_FILE", test_data / "studio_settings.json")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_valid_format")
+    settings.ensure_directories()
+
+    monkeypatch.setattr(
+        ChatGroq,
+        "with_structured_output",
+        lambda self, schema, **kwargs: MockStructuredOutput(schema),
+    )
+
+    res = client.post("/api/generate?slot=morning&niche=AI%20Engineering")
+    assert res.status_code == 200
+    data = res.json()
+    assert "morning" in data["run_id"]
+    assert data["niche"] == "AI Engineering"
     assert 30 <= data["duration"] <= 45
 
 

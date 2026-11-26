@@ -136,7 +136,7 @@ def get_llm(
         return MockLLM()
 
     selected_model = (model_name or settings.GROQ_MODEL).strip() or settings.GROQ_MODEL
-    resolved_max_tokens = _resolve_max_tokens(selected_model, max_tokens=max_tokens)
+    resolved_max_tokens = _resolve_max_tokens(selected_model, requested_max_tokens=max_tokens)
     try:
         llm = ChatGroq(
             model=selected_model,

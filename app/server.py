@@ -184,6 +184,7 @@ def favicon():
 
 
 @app.get("/health")
+@app.head("/health", include_in_schema=False)
 def health_check():
     studio_cfg = storage.get_studio_config()
     return {
@@ -283,7 +284,9 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse, include_in_schema=False)
 @app.get("/dashboard", response_class=HTMLResponse)
+@app.head("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_view(request: Request):
     """Render the redesigned Shorts Studio SaaS Dashboard."""
     studio_cfg = storage.get_studio_config()

@@ -141,6 +141,51 @@ def test_structured_llm_tool_use_failed_fallback_and_xml_recovery(monkeypatch):
     assert result.topic == "Power of Patience in Telugu Proverbs"
 
 
+def test_get_llm_resolves_max_tokens_with_real_factory(monkeypatch):
+    """Ensure get_llm calls _resolve_max_tokens without keyword mismatch when GROQ_API_KEY is configured."""
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_valid_format")
+
+    qwen_default = llm_module.get_llm(force_mock=False, model_name="qwen/qwen3.8-27b")
+    assert isinstance(qwen_default, ChatGroq)
+    assert qwen_default.max_tokens <= 900
+
+    qwen_capped = llm_module.get_llm(force_mock=False, model_name="qwen/qwen3.8-27b", max_tokens=1500)
+    assert isinstance(qwen_capped, ChatGroq)
+    assert qwen_capped.max_tokens == 900
+
+    qwen_small = llm_module.get_llm(force_mock=False, model_name="qwen/qwen3.8-27b", max_tokens=512)
+    assert isinstance(qwen_small, ChatGroq)
+    assert qwen_small.max_tokens == 512
+
+    llama_default = llm_module.get_llm(force_mock=False, model_name="llama-3.3-70b-versatile")
+    assert isinstance(llama_default, ChatGroq)
+    assert llama_default.max_tokens >= 1800
+
+    llama_large = llm_module.get_llm(force_mock=False, model_name="llama-3.3-70b-versatile", max_tokens=2048)
+    assert isinstance(llama_large, ChatGroq)
+    assert llama_large.max_tokens == 2048
+
+    # Exercise invoke_structured_output end-to-end through real get_llm() without stubbing get_llm
+    class FakeJsonModeRunnable:
+        def invoke(self, _prompt):
+            return TopicOutput(
+                topic="Speculative Decoding in Production",
+                angle="Cut LLM latency in half using draft models",
+                reasoning="Strong AI Engineering appeal",
+            )
+
+    monkeypatch.setattr(ChatGroq, "with_structured_output", lambda self, schema, **kw: FakeJsonModeRunnable())
+    topic_out = llm_module.invoke_structured_output(
+        TopicOutput,
+        "Pick a topic",
+        force_mock=False,
+        model_name="llama-3.3-70b-versatile",
+        max_tokens=1200,
+    )
+    assert isinstance(topic_out, TopicOutput)
+    assert topic_out.topic == "Speculative Decoding in Production"
+
+
 def test_research_node_graceful_fallback(monkeypatch):
     """Verify research_topic_node falls back cleanly instead of aborting LangGraph."""
     def _boom(*args, **kwargs):
