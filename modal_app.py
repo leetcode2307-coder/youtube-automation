@@ -1,7 +1,6 @@
 import asyncio
 import os
 import time
-from pathlib import Path
 import modal
 
 APP_NAME = "ai-shorts-automation"
@@ -121,8 +120,6 @@ def web():
     # Ensure DATA_DIR points to mounted persistent volume before settings initialization
     os.environ.setdefault("DATA_DIR", "/data")
     os.environ.setdefault("ENABLE_EMBEDDED_SCHEDULER", "false")
-    os.environ.setdefault("EXTERNAL_SCHEDULER_ACTIVE", "true")
-    os.environ.setdefault("EXTERNAL_SCHEDULER_LABEL", "Modal Cron (UI Synced)")
 
     from app.server import app as fastapi_app
     from app.storage import storage
@@ -139,32 +136,35 @@ def web():
     image=image,
     volumes={"/data": volume},
     secrets=[app_secret],
-    cpu=0.25,
-    memory=512,
-    schedule=modal.Cron("*/5 * * * *"),
+    cpu=1.0,
+    memory=1024,
+    schedule=modal.Cron("0 7 * * *", timezone="Asia/Kolkata"),
     timeout=600,
 )
-def scheduled_dispatcher():
-    """Lightweight UI-synced cron dispatcher checking StudioConfig schedules every 5 minutes."""
+def scheduled_morning():
     os.environ.setdefault("DATA_DIR", "/data")
     _safe_reload()
-
-    from app.scheduler_check import find_due_slots, mark_slot_dispatched
-
-    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
-    due_slots = find_due_slots(data_dir)
-    if not due_slots:
-        return []
-
     from app.pipeline import run_content_pipeline
 
-    triggered = []
-    for slot, fire_iso in due_slots:
-        # Mark before running to avoid duplicate triggers across overlapping ticks
-        mark_slot_dispatched(data_dir, slot, fire_iso)
-        _safe_commit()
-        pkg = run_content_pipeline(slot=slot)  # type: ignore[arg-type]
-        _safe_commit()
-        triggered.append({"slot": slot, "run_id": pkg.run_id, "scheduled_for": fire_iso})
+    pkg = run_content_pipeline(slot="morning")
+    _safe_commit()
+    return pkg.run_id
 
-    return triggered
+
+@app.function(
+    image=image,
+    volumes={"/data": volume},
+    secrets=[app_secret],
+    cpu=1.0,
+    memory=1024,
+    schedule=modal.Cron("30 16 * * *", timezone="Asia/Kolkata"),
+    timeout=600,
+)
+def scheduled_evening():
+    os.environ.setdefault("DATA_DIR", "/data")
+    _safe_reload()
+    from app.pipeline import run_content_pipeline
+
+    pkg = run_content_pipeline(slot="evening")
+    _safe_commit()
+    return pkg.run_id

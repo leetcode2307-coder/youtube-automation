@@ -386,21 +386,6 @@ def test_static_assets_logs_and_scheduler_summary(test_package):
     assert "soonest" in sched
 
 
-def test_external_scheduler_status_flag(test_package, monkeypatch):
-    monkeypatch.setattr(settings, "ENABLE_EMBEDDED_SCHEDULER", False)
-    monkeypatch.setattr(settings, "EXTERNAL_SCHEDULER_ACTIVE", True)
-    monkeypatch.setattr(settings, "EXTERNAL_SCHEDULER_LABEL", "Modal Cron (UI Synced)")
-
-    res_dash = client.get("/")
-    assert res_dash.status_code == 200
-    assert "Scheduler Active" in res_dash.text
-    assert "Modal Cron (UI Synced)" in res_dash.text
-
-    res_status = client.get("/api/status")
-    assert res_status.status_code == 200
-    assert res_status.json()["scheduler"]["active"] is True
-
-
 def test_favicon_and_video_range_headers(test_package):
     res_icon = client.get("/favicon.ico")
     assert res_icon.status_code == 200

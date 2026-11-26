@@ -213,7 +213,6 @@ def health_check():
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "embedded_scheduler": settings.ENABLE_EMBEDDED_SCHEDULER,
-        "external_scheduler": settings.EXTERNAL_SCHEDULER_ACTIVE,
         "timezone": studio_cfg.timezone,
         "niche": studio_cfg.niche,
     }

@@ -102,8 +102,6 @@ class Settings(BaseSettings):
     MORNING_CRON: str = "0 7 * * *"
     EVENING_CRON: str = "30 16 * * *"
     ENABLE_EMBEDDED_SCHEDULER: bool = False
-    EXTERNAL_SCHEDULER_ACTIVE: bool = False
-    EXTERNAL_SCHEDULER_LABEL: str = "Modal Cron (UI Synced)"
 
     # Directory Structure
     DATA_DIR: Path = Path("data")
