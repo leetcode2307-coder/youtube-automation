@@ -144,6 +144,17 @@ def test_dashboard_ui_and_api(test_package):
     assert res_dash.status_code == 200
     assert "AI Engineering Shorts Studio" in res_dash.text
     assert test_package.run_id in res_dash.text
+    assert "themeToggleBtn" in res_dash.text
+    assert "Telugu" in res_dash.text
+    assert "Hindi" in res_dash.text
+    assert "Tamil" in res_dash.text
+    assert "Malayalam" in res_dash.text
+    assert "Omni" in res_dash.text
+    assert "project ZIP" in res_dash.text
+    assert "/static/styles.css?v=" in res_dash.text
+    assert "/static/app.js?v=" in res_dash.text
+    assert "cfg-use_ai_voiceover" in res_dash.text
+    assert "cfg-audio_mode" in res_dash.text
 
     # Test JSON status API
     res_status = client.get("/api/status")
@@ -170,12 +181,31 @@ def test_clip_upload_notify_and_retry_upload(test_package):
     assert res_clips.status_code == 200
     assert len(res_clips.json()["clips"]) == 5
 
-    # 3. Reject invalid extension upload
+    # 3. Reject invalid extension upload and verify no temp .part files remain
     res_bad_up = client.post(
         f"/api/upload-clips/{run_id}",
         files=[("files", ("bad_clip.avi", b"A" * 2048, "video/x-msvideo"))],
     )
     assert res_bad_up.status_code == 400
+    assert list((settings.FLOW_EXPORTS_DIR / run_id).glob("*.part*")) == []
+
+    # 3b. Reject too-small mp4 and verify cleanup of .part file
+    res_small = client.post(
+        f"/api/upload-clips/{run_id}",
+        files=[("files", ("scene_01.mp4", b"tiny", "video/mp4"))],
+    )
+    assert res_small.status_code == 400
+    assert list((settings.FLOW_EXPORTS_DIR / run_id).glob("*.part*")) == []
+
+    # 3c. Single-file per-request uploads (used by parallel frontend XHR queue)
+    res_single = client.post(
+        f"/api/upload-clips/{run_id}",
+        files=[("files", ("scene_01.mp4", b"UPDATED_MP4_DATA_" * 200, "video/mp4"))],
+    )
+    assert res_single.status_code == 200
+    assert res_single.json()["uploaded"] == ["scene_01.mp4"]
+    assert res_single.json()["missing_scenes"] == []
+    assert list((settings.FLOW_EXPORTS_DIR / run_id).glob("*.part*")) == []
 
     # 4. Path traversal protection
     res_trav = client.get("/api/clips/..evil")
@@ -205,10 +235,11 @@ def test_api_generate_mock(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
     settings.ensure_directories()
 
-    res = client.post("/api/generate?slot=evening&mock=true")
+    res = client.post("/api/generate?slot=evening&mock=true&language=telugu")
     assert res.status_code == 200
     data = res.json()
     assert "evening" in data["run_id"]
+    assert data["language"] == "telugu"
     assert 30 <= data["duration"] <= 45
 
 
@@ -337,10 +368,12 @@ def test_static_assets_logs_and_scheduler_summary(test_package):
     res_css = client.get("/static/styles.css")
     assert res_css.status_code == 200
     assert "--color-primary" in res_css.text
+    assert '[data-theme="dark"]' in res_css.text
 
     res_js = client.get("/static/app.js")
     assert res_js.status_code == 200
     assert "navigateTo" in res_js.text
+    assert "toggleTheme" in res_js.text
 
     res_logs = client.get("/api/logs?limit=20")
     assert res_logs.status_code == 200
@@ -351,6 +384,21 @@ def test_static_assets_logs_and_scheduler_summary(test_package):
     sched = res_status.json()["scheduler"]
     assert "timezone_label" in sched
     assert "soonest" in sched
+
+
+def test_external_scheduler_status_flag(test_package, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_EMBEDDED_SCHEDULER", False)
+    monkeypatch.setattr(settings, "EXTERNAL_SCHEDULER_ACTIVE", True)
+    monkeypatch.setattr(settings, "EXTERNAL_SCHEDULER_LABEL", "Modal Cron (UI Synced)")
+
+    res_dash = client.get("/")
+    assert res_dash.status_code == 200
+    assert "Scheduler Active" in res_dash.text
+    assert "Modal Cron (UI Synced)" in res_dash.text
+
+    res_status = client.get("/api/status")
+    assert res_status.status_code == 200
+    assert res_status.json()["scheduler"]["active"] is True
 
 
 def test_favicon_and_video_range_headers(test_package):

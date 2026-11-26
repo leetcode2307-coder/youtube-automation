@@ -3,6 +3,36 @@
 const AUTO_ASSEMBLE = Boolean(window.__STUDIO_CONFIG__?.autoAssemble);
 const AUTO_OPEN_REVIEW = Boolean(window.__STUDIO_CONFIG__?.autoOpenReview);
 
+function getPreferredTheme() {
+  try {
+    const saved = localStorage.getItem("studio-theme");
+    if (saved === "dark" || saved === "light") return saved;
+  } catch (_e) {}
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  const active = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", active);
+  try {
+    localStorage.setItem("studio-theme", active);
+  } catch (_e) {}
+  const label = document.getElementById("themeToggleLabel");
+  const btn = document.getElementById("themeToggleBtn");
+  if (label) label.textContent = active === "dark" ? "Light Mode" : "Dark Mode";
+  if (btn) btn.setAttribute("aria-pressed", String(active === "dark"));
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") || getPreferredTheme();
+  applyTheme(current === "dark" ? "light" : "dark");
+}
+
+function copyText(text, label = "Text") {
+  navigator.clipboard.writeText(text || "");
+  showToast(label + " copied to clipboard.", "success");
+}
+
 const SECTION_TITLES = {
   overview: "Overview",
   videos: "Videos & Pipeline",
@@ -77,9 +107,11 @@ function setBtnBusy(btn, busy, busyLabel) {
 
 async function generateShort(slot, btnEl) {
   const nicheInput = document.getElementById("quickNiche");
+  const langSelect = document.getElementById("quickLanguage");
   const topicInput = document.getElementById("quickTopic");
   const params = new URLSearchParams({ slot });
   if (nicheInput && nicheInput.value.trim()) params.set("niche", nicheInput.value.trim());
+  if (langSelect && langSelect.value) params.set("language", langSelect.value);
   if (topicInput && topicInput.value.trim()) params.set("topic", topicInput.value.trim());
 
   setBtnBusy(btnEl, true, "Creating script...");
@@ -118,34 +150,150 @@ function uploadClips(runId, inputEl) {
   }
 }
 
+function formatBytesMB(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function renderUploadProgress(banner, text, percent = null) {
+  if (!banner) return;
+  banner.style.display = "block";
+  banner.textContent = "";
+  const label = document.createElement("div");
+  label.textContent = text;
+  banner.appendChild(label);
+  if (typeof percent === "number") {
+    const track = document.createElement("div");
+    track.className = "progress-track";
+    const fill = document.createElement("div");
+    fill.className = "progress-fill";
+    fill.style.width = Math.max(0, Math.min(100, percent)) + "%";
+    track.appendChild(fill);
+    banner.appendChild(track);
+  }
+}
+
+function uploadSingleFileXhr(runId, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload-clips/" + encodeURIComponent(runId), true);
+    xhr.timeout = 140000;
+
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && typeof onProgress === "function") {
+        onProgress(ev.loaded, ev.total);
+      }
+    };
+
+    xhr.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch (_e) {
+        data = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (typeof onProgress === "function") onProgress(file.size, file.size);
+        resolve(data);
+      } else {
+        reject(new Error(data.detail || "Upload failed (" + xhr.status + ")"));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network error while uploading " + file.name));
+    xhr.ontimeout = () => reject(new Error("Upload timed out for " + file.name));
+
+    const formData = new FormData();
+    formData.append("files", file);
+    xhr.send(formData);
+  });
+}
+
 async function uploadFileList(runId, files) {
+  const fileArr = Array.from(files || []);
+  if (!fileArr.length) return;
+
   const banner = document.getElementById("progress-" + runId);
-  const setProgress = (msg) => {
-    if (banner) {
-      banner.style.display = "block";
-      banner.textContent = msg;
-    }
-    showToast(msg);
+  const setProgress = (msg, pct = null) => {
+    renderUploadProgress(banner, msg, pct);
   };
 
-  setProgress("Step 1 of 3: Uploading " + files.length + " clip(s)...");
-  const formData = new FormData();
-  for (const f of files) formData.append("files", f);
+  // Client-side preflight validation so invalid files fail instantly without uploading bytes
+  for (const f of fileArr) {
+    const lower = f.name.toLowerCase();
+    if (!lower.endsWith(".mp4") && lower !== "voiceover.mp3") {
+      showToast("Unsupported file '" + f.name + "'. Upload scene_01.mp4..scene_0N.mp4 or voiceover.mp3.", "error");
+      return;
+    }
+    if (lower.endsWith(".mp4") && !/scene_?0*\d+/i.test(f.name)) {
+      showToast("MP4 filename '" + f.name + "' must follow scene_01.mp4 naming convention.", "error");
+      return;
+    }
+    if (f.size < 1024) {
+      showToast("File '" + f.name + "' is too small or empty.", "error");
+      return;
+    }
+  }
+
+  const totalBytes = fileArr.reduce((sum, f) => sum + (f.size || 0), 0);
+  const loadedByFile = new Array(fileArr.length).fill(0);
+  let completedCount = 0;
+
+  const updateUploadUi = () => {
+    const loadedTotal = loadedByFile.reduce((a, b) => a + b, 0);
+    const pct = totalBytes > 0 ? Math.min(100, Math.round((loadedTotal / totalBytes) * 100)) : 0;
+    setProgress(
+      "Step 1 of 3: Uploading " +
+        fileArr.length +
+        " clip(s) — " +
+        pct +
+        "% (" +
+        formatBytesMB(loadedTotal) +
+        " / " +
+        formatBytesMB(totalBytes) +
+        ") • " +
+        completedCount +
+        "/" +
+        fileArr.length +
+        " complete",
+      pct
+    );
+  };
+
+  updateUploadUi();
+  showToast("Uploading " + fileArr.length + " clip(s) in parallel...");
 
   try {
-    const upRes = await fetch("/api/upload-clips/" + encodeURIComponent(runId), {
-      method: "POST",
-      body: formData,
-    });
-    const upData = await upRes.json();
-    if (!upRes.ok) {
-      showToast("Upload failed: " + (upData.detail || "Invalid clip file"), "error");
-      if (banner) banner.style.display = "none";
+    // Upload up to 3 files concurrently so requests stay small, fast, and under proxy limits
+    const concurrency = Math.min(3, fileArr.length);
+    let nextIdx = 0;
+
+    async function worker() {
+      while (nextIdx < fileArr.length) {
+        const idx = nextIdx++;
+        const file = fileArr[idx];
+        await uploadSingleFileXhr(runId, file, (loaded, total) => {
+          const scaled = total > 0 ? Math.round((loaded / total) * (file.size || total)) : loaded;
+          loadedByFile[idx] = Math.min(file.size || scaled, scaled);
+          updateUploadUi();
+        });
+        loadedByFile[idx] = file.size || loadedByFile[idx];
+        completedCount += 1;
+        updateUploadUi();
+      }
+    }
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    const clipsRes = await fetch("/api/clips/" + encodeURIComponent(runId));
+    const upData = await clipsRes.json();
+    if (!clipsRes.ok) {
+      showToast("Upload check failed: " + (upData.detail || "Unable to verify clips"), "error");
       return;
     }
 
     if (AUTO_ASSEMBLE && upData.missing_scenes && upData.missing_scenes.length === 0) {
-      setProgress("Step 2 of 3: All clips uploaded. Preparing your 9:16 video and voiceover...");
+      setProgress("Step 2 of 3: All clips uploaded. Preparing your 9:16 video and voiceover...", null);
+      showToast("All clips uploaded. Assembling video...", "info");
       const asmRes = await fetch("/api/assemble/" + encodeURIComponent(runId), { method: "POST" });
       const asmData = await asmRes.json();
       if (!asmRes.ok) {
@@ -155,7 +303,7 @@ async function uploadFileList(runId, files) {
       }
 
       if (AUTO_OPEN_REVIEW) {
-        setProgress("Step 3 of 3: Video ready! Opening your review screen...");
+        setProgress("Step 3 of 3: Video ready! Opening your review screen...", null);
         const notRes = await fetch("/api/notify/" + encodeURIComponent(runId), { method: "POST" });
         const notData = await notRes.json();
         if (notRes.ok && notData.review_url) {
@@ -176,7 +324,8 @@ async function uploadFileList(runId, files) {
       setTimeout(() => window.location.reload(), 900);
     }
   } catch (err) {
-    showToast("Upload error: " + err, "error");
+    showToast("Upload failed: " + (err?.message || err), "error");
+    if (banner) banner.style.display = "none";
   }
 }
 
@@ -356,6 +505,7 @@ async function saveAllSettings(ev, fromScheduleForm = false) {
 
   const payload = {
     studio_name: document.getElementById("cfg-studio_name").value.trim(),
+    language: document.getElementById("cfg-language")?.value || "english",
     niche: document.getElementById("cfg-niche").value.trim(),
     niche_domains: document.getElementById("cfg-niche_domains").value.trim(),
     audience_tone: document.getElementById("cfg-audience_tone").value.trim(),
@@ -365,6 +515,8 @@ async function saveAllSettings(ev, fromScheduleForm = false) {
     max_duration_seconds: parseInt(document.getElementById("cfg-max_duration_seconds").value, 10),
     groq_model: document.getElementById("cfg-groq_model").value.trim(),
     tts_voice: document.getElementById("cfg-tts_voice").value.trim(),
+    use_ai_voiceover: document.getElementById("cfg-use_ai_voiceover")?.checked ?? true,
+    audio_mode: document.getElementById("cfg-audio_mode")?.value || "ai_voiceover",
     default_privacy_status: document.getElementById("cfg-default_privacy_status").value,
     timezone: document.getElementById("cfg-timezone").value.trim(),
     morning_cron: document.getElementById("cfg-morning_cron").value.trim(),
@@ -414,6 +566,7 @@ async function refreshLogs() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  applyTheme(getPreferredTheme());
   const initialHash = window.location.hash.replace("#", "");
   if (initialHash && SECTION_TITLES[initialHash]) {
     navigateTo(initialHash, false);

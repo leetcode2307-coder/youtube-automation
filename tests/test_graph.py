@@ -34,6 +34,8 @@ def test_content_pipeline_execution(tmp_path, monkeypatch):
     assert package.status == "awaiting_flow_export"
     assert 30 <= package.total_duration_seconds <= 45
     assert len(package.scenes) >= 3
+    assert all(8 <= s.duration_seconds <= 15 for s in package.scenes)
+    assert len(package.characters) >= 1
     assert package.metadata.title
     assert len(package.metadata.hashtags) >= 3
 
@@ -45,12 +47,44 @@ def test_content_pipeline_execution(tmp_path, monkeypatch):
     assert flow_file.exists()
     content = flow_file.read_text(encoding="utf-8")
     assert "GOOGLE FLOW VIDEO GENERATION BRIEF" in content
+    assert "CONSISTENT CHARACTERS TO ADD IN GOOGLE FLOW FIRST" in content
+    assert "Omni" in content
+    assert "project ZIP" in content
     assert package.topic in content
     assert "SCENE 1" in content
 
     # Check topic history
     history = storage.get_topic_history()
     assert any(h["topic"] == package.topic for h in history)
+
+
+def test_multilingual_pipeline_and_tts_voice_resolution(tmp_path, monkeypatch):
+    from app.config import LANGUAGE_PROFILES, normalize_language, resolve_tts_voice
+
+    assert set(LANGUAGE_PROFILES.keys()) == {"english", "telugu", "hindi", "tamil", "malayalam"}
+    assert normalize_language("TELUGU") == "telugu"
+    assert normalize_language("unknown") == "english"
+
+    assert resolve_tts_voice("telugu", "en-US-ChristopherNeural") == "te-IN-MohanNeural"
+    assert resolve_tts_voice("telugu", "te-IN-ShrutiNeural") == "te-IN-ShrutiNeural"
+    assert resolve_tts_voice("hindi", "en-US-ChristopherNeural") == "hi-IN-MadhurNeural"
+    assert resolve_tts_voice("tamil", "en-US-ChristopherNeural") == "ta-IN-ValluvarNeural"
+    assert resolve_tts_voice("malayalam", "en-US-ChristopherNeural") == "ml-IN-MidhunNeural"
+
+    test_data_dir = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data_dir)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data_dir / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data_dir / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data_dir / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data_dir / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data_dir / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data_dir / "approvals.json")
+    settings.ensure_directories()
+
+    pkg = run_content_pipeline("evening", force_mock=True, language_override="telugu")
+    assert pkg.language == "telugu"
+    flow_text = (settings.FLOW_EXPORTS_DIR / pkg.run_id / "FLOW_PROMPTS.txt").read_text(encoding="utf-8")
+    assert "Telugu" in flow_text
 
 
 def test_short_title_metadata_normalization_recovery(monkeypatch):

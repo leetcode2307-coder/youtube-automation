@@ -4,10 +4,10 @@ from typing import Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 
-from app.config import settings
+from app.config import LANGUAGE_PROFILES, normalize_language, settings
 from app.llm import invoke_structured_output
 from app.logging_config import logger
-from app.models import PrivacyStatus, ProductionPackage, Scene, SEOMetadata, SlotType
+from app.models import CharacterProfile, PrivacyStatus, ProductionPackage, Scene, SEOMetadata, SlotType
 
 
 # --- Structured Output Schemas for LLM ---
@@ -25,7 +25,12 @@ class ResearchOutput(BaseModel):
 
 class ScriptOutput(BaseModel):
     hook: str = Field(description="High-retention 0-3 second opening hook line")
-    scenes: List[Scene] = Field(min_length=3, max_length=8, description="Sequential scenes matching target duration")
+    characters: List[CharacterProfile] = Field(
+        default_factory=list,
+        max_length=3,
+        description="1-3 recurring characters to add in Google Flow Characters for consistent video clips",
+    )
+    scenes: List[Scene] = Field(min_length=3, max_length=6, description="Sequential 8-15s Google Flow Omni scenes matching target duration")
     cta: str = Field(description="Closing call to action, e.g. subscribe")
 
 
@@ -53,6 +58,7 @@ class GraphState(TypedDict, total=False):
     created_at_utc: str
     recent_topics: List[str]
     niche: str
+    language: str
     niche_domains: str
     audience_tone: str
     default_cta: str
@@ -70,6 +76,7 @@ class GraphState(TypedDict, total=False):
     sources: List[str]
     key_insights: List[str]
     hook: str
+    characters: List[CharacterProfile]
     scenes: List[Scene]
     narration_full: str
     total_duration_seconds: int
@@ -169,6 +176,8 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
     force_mock = state.get("force_mock", False)
     groq_model = state.get("groq_model")
     niche = state.get("niche") or settings.DEFAULT_NICHE
+    language = normalize_language(state.get("language"))
+    lang_profile = LANGUAGE_PROFILES[language]
     domains = state.get("niche_domains") or settings.DEFAULT_NICHE_DOMAINS
     tone = state.get("audience_tone") or settings.DEFAULT_AUDIENCE_TONE
     custom_topic = (state.get("custom_topic") or "").strip()
@@ -177,13 +186,14 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
         if force_mock:
             return {
                 "topic": custom_topic,
-                "angle": f"Practical, high-retention {niche} breakdown on {custom_topic}",
+                "angle": f"Practical, high-retention {niche} ({lang_profile['label']}) breakdown on {custom_topic}",
             }
         prompt = (
-            f"You are a YouTube Shorts strategist specializing in '{niche}'.\n"
+            f"You are a YouTube Shorts strategist specializing in '{niche}' for {lang_profile['label']} audiences.\n"
             f"Tone/Audience: {tone}\n"
+            f"Target Language: {lang_profile['label']}. {lang_profile['script_instruction']}\n"
             f"The creator specifically requested this topic: '{custom_topic}'.\n"
-            "Keep the topic aligned to the requested subject and propose a sharp, concise angle (<= 40 words) for a 30-45s Short."
+            "Keep the topic aligned to the requested subject and propose a sharp, visual storytelling angle (<= 40 words) ideal for 8-15s Google Flow Omni scenes."
         )
         try:
             result: TopicOutput = invoke_structured_output(
@@ -200,7 +210,7 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
             logger.warning("select_topic custom angle generation failed (%s); using direct angle.", exc)
             return {
                 "topic": custom_topic,
-                "angle": f"Engaging 30-45s {niche} story focused on {custom_topic}",
+                "angle": f"Engaging 30-45s {niche} story in {lang_profile['label']} focused on {custom_topic}",
             }
 
     recent = state.get("recent_topics", [])
@@ -208,11 +218,12 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
 
     prompt = (
         f"You are a Lead Content Strategist for a YouTube Shorts channel in the '{niche}' niche.\n"
+        f"Target Language: {lang_profile['label']}.\n"
         f"Audience & Tone: {tone}\n"
-        f"Select ONE compelling, specific topic for a YouTube Short (keep topic under 120 characters).\n"
+        f"Select ONE compelling, highly visual topic for a YouTube Short (keep topic under 120 characters) suited to 8-15s AI video scenes.\n"
         f"Focus Areas / Subtopics: {domains}\n\n"
         f"Recently covered topics (DO NOT DUPLICATE THESE):\n{recent_str}\n\n"
-        "Provide a unique topic, concise angle (1-2 sentences), and brief reasoning."
+        "Provide a unique topic, concise visual angle (1-2 sentences), and brief reasoning."
     )
 
     try:
@@ -275,12 +286,15 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
     force_mock = state.get("force_mock", False)
     groq_model = state.get("groq_model")
     niche = state.get("niche") or settings.DEFAULT_NICHE
+    language = normalize_language(state.get("language"))
+    lang_profile = LANGUAGE_PROFILES[language]
     tone = state.get("audience_tone") or settings.DEFAULT_AUDIENCE_TONE
     default_cta = state.get("default_cta") or settings.DEFAULT_CTA
     min_dur = state.get("min_duration_seconds", settings.MIN_VIDEO_DURATION)
     max_dur = state.get("max_duration_seconds", settings.MAX_VIDEO_DURATION)
-    min_scenes = state.get("min_scenes", 4)
-    max_scenes = state.get("max_scenes", 6)
+    # Google AI Pro Omni clips run 8-15s per scene; clamp scene bounds so total stays within min_dur..max_dur
+    max_scenes = max(3, min(state.get("max_scenes", 5), max_dur // 8))
+    min_scenes = min(max_scenes, max(3, state.get("min_scenes", 3), (min_dur + 14) // 15))
 
     retry_feedback = ""
     if state.get("validation_errors"):
@@ -291,25 +305,29 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
         )
 
     prompt = (
-        f"You are writing a script for a {min_dur} to {max_dur} second YouTube Short in the '{niche}' niche.\n"
+        f"You are writing a YouTube Short script and Google Flow Omni video prompts ({min_dur}-{max_dur}s total) in '{niche}'.\n"
+        f"Target Language: {lang_profile['label']}. {lang_profile['script_instruction']}\n"
         f"Audience & Tone: {tone}\n"
         f"Topic: {state.get('topic')}\n"
         f"Angle: {state.get('angle')}\n"
         f"Key Insights: {', '.join(state.get('key_insights', []))}\n"
         f"{retry_feedback}\n"
-        "STRICT CONSTRAINTS:\n"
-        f"1. Video duration MUST be between {min_dur} and {max_dur} seconds total.\n"
+        "STRICT CONSTRAINTS (GOOGLE AI PRO — GOOGLE FLOW OMNI MODEL):\n"
+        f"1. Total duration MUST be between {min_dur} and {max_dur} seconds.\n"
         f"2. Break the video into {min_scenes} to {max_scenes} sequential scenes.\n"
-        "3. Each scene duration_seconds MUST be an integer between 4 and 12.\n"
+        "3. Each scene duration_seconds MUST be an integer between 8 and 15 (optimized for Google Flow Omni 8-15s clips).\n"
         f"4. The SUM of all scene duration_seconds MUST EQUAL between {min_dur} and {max_dur}.\n"
-        "5. For each scene, provide:\n"
-        "   - narration (crisp 1-2 spoken sentences matching scene duration)\n"
-        "   - on_screen_text (punchy 2-5 word caption)\n"
-        "   - visual_prompt (CONCISE 15-25 word 9:16 vertical cinematic prompt for Google Flow)\n"
+        "5. CONSISTENT CHARACTERS (CRITICAL): Define 1 to 3 recurring characters in 'characters' with:\n"
+        "   - name (short reusable label, e.g. 'Bujji Hanuman' or 'Aarav')\n"
+        "   - role (e.g. 'Protagonist', 'Host')\n"
+        "   - visual_description (immutable English appearance prompt for Google Flow Characters: age, face, hair, clothing, colors, art/cinematic style)\n"
+        "6. For each scene, provide:\n"
+        f"   - narration: natural spoken lines in {lang_profile['label']} matching an 8-15s beat (2-3 crisp sentences)\n"
+        f"   - on_screen_text: punchy 2-6 word caption in {lang_profile['label']}\n"
+        "   - visual_prompt: VIVID ENGLISH cinematic prompt (under 240 characters) for Google Flow Omni 9:16 vertical video. Reference the exact character 'name' from 'characters', camera angle/motion, lighting, environment, and action progression.\n"
         "   - export_filename: 'scene_01.mp4', 'scene_02.mp4', etc.\n"
-        "6. High retention hook for scene 1 (0-3s).\n"
-        f"7. Punchy call to action at the end (e.g., '{default_cta}').\n"
-        "Keep every visual_prompt concise (under 200 characters) so the complete JSON finishes cleanly without truncation."
+        f"7. High-retention opening hook in {lang_profile['label']} for scene 1 (0-3s), and punchy CTA in {lang_profile['label']} (inspired by: '{default_cta}').\n"
+        "Keep prompts crisp so the complete JSON finishes cleanly without truncation."
     )
 
     try:
@@ -337,9 +355,13 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
     total_duration = sum(s.duration_seconds for s in normalized_scenes)
     full_narration = " ".join(s.narration for s in normalized_scenes)
 
-    logger.info("Drafted script: %d scenes, %d seconds total duration", len(normalized_scenes), total_duration)
+    logger.info(
+        "Drafted script (%s): %d scenes, %d characters, %d seconds total duration",
+        language, len(normalized_scenes), len(result.characters), total_duration,
+    )
     return {
         "hook": result.hook,
+        "characters": result.characters,
         "scenes": normalized_scenes,
         "cta": result.cta or default_cta,
         "narration_full": full_narration,
@@ -352,17 +374,20 @@ def generate_metadata_node(state: GraphState) -> Dict[str, Any]:
     force_mock = state.get("force_mock", False)
     groq_model = state.get("groq_model")
     niche = state.get("niche") or settings.DEFAULT_NICHE
+    language = normalize_language(state.get("language"))
+    lang_profile = LANGUAGE_PROFILES[language]
     category_id = state.get("category_id") or settings.DEFAULT_YOUTUBE_CATEGORY_ID
     synthetic_default = state.get("synthetic_media_default", settings.DEFAULT_SYNTHETIC_MEDIA)
 
     prompt = (
-        f"Create YouTube Shorts SEO metadata for a '{niche}' video.\n"
+        f"Create YouTube Shorts SEO metadata for a '{niche}' video in {lang_profile['label']}.\n"
+        f"Language Rule: {lang_profile['script_instruction']}\n"
         f"Topic: {state.get('topic')}\n"
         f"Hook: {state.get('hook')}\n"
         f"Full Narration: {state.get('narration_full')}\n\n"
         "Requirements (STRICT):\n"
-        "- title: MUST be 20 to 90 characters (minimum 10 characters; NEVER return a single short word).\n"
-        "- description: MUST be at least 30 characters with summary, keywords, and story notes.\n"
+        f"- title: MUST be 20 to 90 characters in {lang_profile['label']} (minimum 10 characters; NEVER return a single short word).\n"
+        f"- description: MUST be at least 30 characters in {lang_profile['label']} with summary, keywords, and story notes.\n"
         "- hashtags: 3 to 5 relevant hashtags starting with #.\n"
         "- tags: 5 to 10 YouTube search keyword tags.\n"
         f"- synthetic_media_disclosure: {str(synthetic_default).lower()}."
@@ -403,44 +428,66 @@ def create_flow_prompts_node(state: GraphState) -> Dict[str, Any]:
     run_id = state.get("run_id", "unknown_run")
     slot = state.get("slot", "morning")
     niche = state.get("niche") or settings.DEFAULT_NICHE
+    language = normalize_language(state.get("language"))
+    lang_label = LANGUAGE_PROFILES[language]["label"]
     topic = state.get("topic", "")
     total_dur = state.get("total_duration_seconds", 0)
+    characters = state.get("characters", [])
     scenes = state.get("scenes", [])
 
     lines = [
         "=" * 70,
         f"GOOGLE FLOW VIDEO GENERATION BRIEF - RUN ID: {run_id}",
-        f"Niche: {niche} | Slot: {slot.upper()} | Topic: {topic}",
-        f"Target Total Duration: {total_dur} seconds | Target Aspect Ratio: 9:16 (Portrait)",
+        f"Niche: {niche} | Language: {lang_label} | Slot: {slot.upper()} | Topic: {topic}",
+        f"Target Model: Google AI Pro (Google Flow Omni, 8-15s/scene) | Aspect: 9:16 (Portrait)",
+        f"Target Total Duration: {total_dur} seconds across {len(scenes)} scenes",
         "=" * 70,
         "",
-        "INSTRUCTIONS FOR OPERATOR (GOOGLE AI PRO FLOW):",
-        f"1. Open Google Flow and create a new project for Run ID '{run_id}'.",
-        "2. For each scene below, generate a vertical (9:16) video clip using the Visual Prompt.",
-        "3. Set clip duration to match the target scene duration.",
-        f"4. Export each clip and upload it via the Studio UI (or save to data/flow_exports/{run_id}/).",
-        "5. Name each file strictly as specified (e.g. scene_01.mp4, scene_02.mp4, etc.).",
+        "STEP-BY-STEP INSTRUCTIONS FOR GOOGLE AI PRO (FLOW OMNI):",
+        f"1. Open Google Flow and create a new 9:16 Portrait project for Run ID '{run_id}'.",
+        "2. Select the Omni video model and set clip length to 8-15 seconds per scene.",
+        "3. Open 'Characters' in Google Flow FIRST and add each character below so characters stay consistent across all video clips.",
+        "4. Generate each scene clip ONE BY ONE using its FLOW VISUAL PROMPT (selecting the matching character(s) and duration).",
+        "5. After generating all scenes, download the project ZIP from Google Flow.",
+        "6. Extract the ZIP on your device, ensure clips are named scene_01.mp4 .. scene_0N.mp4 in order, and upload them into the Studio.",
+        "   (Note: After YouTube publish finishes, intermediate scene_xx.mp4 files are automatically deleted from storage; final Short & captions remain.)",
         "",
-        "-" * 70,
-        "SCENE-BY-SCENE GENERATION PROMPTS:",
-        "-" * 70,
     ]
+
+    if characters:
+        lines.extend([
+            "-" * 70,
+            "CONSISTENT CHARACTERS TO ADD IN GOOGLE FLOW FIRST:",
+            "-" * 70,
+        ])
+        for c in characters:
+            lines.extend([
+                f"* {c.name} ({c.role})",
+                f"  Character Prompt: {c.visual_description}",
+                "",
+            ])
+
+    lines.extend([
+        "-" * 70,
+        "SCENE-BY-SCENE GENERATION PROMPTS (GENERATE ONE BY ONE):",
+        "-" * 70,
+    ])
 
     for s in scenes:
         lines.extend([
             f"\n[SCENE {s.scene_number}] -> Export Filename: {s.export_filename}",
-            f"Duration: {s.duration_seconds} seconds",
-            f"On-Screen Text: {s.on_screen_text}",
-            f"Voiceover Text: \"{s.narration}\"",
+            f"Target Duration: {s.duration_seconds} seconds (Omni 8-15s clip)",
+            f"On-Screen Text ({lang_label}): {s.on_screen_text}",
+            f"Voiceover Text ({lang_label}): \"{s.narration}\"",
             f"FLOW VISUAL PROMPT:\n{s.visual_prompt}",
             "-" * 40,
         ])
 
     lines.extend([
         "\nPOST-EXPORT VERIFICATION CHECKLIST:",
-        f"[ ] All {len(scenes)} clips uploaded via Dashboard or placed in data/flow_exports/{run_id}/",
+        f"[ ] Downloaded project ZIP from Google Flow and extracted all {len(scenes)} clip(s)",
         f"[ ] Filenames match exactly: {', '.join(s.export_filename for s in scenes)}",
-        "[ ] Optional: include voiceover.mp3 if using custom audio.",
+        "[ ] Uploaded clips in the Studio (optional: include voiceover.mp3 for custom audio)",
         "=" * 70,
     ])
 
@@ -493,9 +540,11 @@ def validate_package_node(state: GraphState) -> Dict[str, Any]:
         created_at_utc=state.get("created_at_utc", datetime.now(timezone.utc).isoformat()),
         scheduled_at_local=state.get("scheduled_at_local", ""),
         niche=niche,
+        language=normalize_language(state.get("language")),
         topic=state["topic"],
         hook=state["hook"],
         narration_full=state.get("narration_full", ""),
+        characters=state.get("characters", []),
         scenes=scenes,
         total_duration_seconds=total_duration,
         metadata=state["metadata"],

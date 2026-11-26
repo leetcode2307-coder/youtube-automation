@@ -11,7 +11,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 from app.assemble import calculate_sha256
-from app.config import settings
+from app.config import LANGUAGE_PROFILES, normalize_language, settings
+from app.intake import extract_scene_number
 from app.logging_config import logger
 from app.models import UploadRecord
 from app.storage import storage
@@ -147,6 +148,24 @@ def get_youtube_service(mock: bool = False, interactive: bool = False):
     return build("youtube", "v3", credentials=creds)
 
 
+def cleanup_intermediate_scene_clips(run_id: str) -> int:
+    """Delete intermediate scene_xx.mp4 clips once final Short & captions are published."""
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    if not run_export_dir.exists():
+        return 0
+    removed = 0
+    for mp4_file in list(run_export_dir.glob("*.mp4")):
+        if extract_scene_number(mp4_file.name) > 0:
+            try:
+                mp4_file.unlink()
+                removed += 1
+            except OSError as exc:
+                logger.warning("Could not remove intermediate clip %s: %s", mp4_file, exc)
+    if removed:
+        logger.info("Cleaned up %d intermediate scene clip(s) for published run %s", removed, run_id)
+    return removed
+
+
 def upload_video_to_youtube(
     run_id: str,
     force_mock: bool = False,
@@ -175,9 +194,12 @@ def upload_video_to_youtube(
             "IDEMPOTENCY GUARD: Run %s already uploaded as YouTube ID %s. Skipping duplicate upload.",
             run_id, existing_upload.youtube_video_id
         )
+        cleanup_intermediate_scene_clips(run_id)
         return existing_upload
 
-    # Resolve privacy & synthetic media disclosure
+    # Resolve language, privacy & synthetic media disclosure
+    lang_key = normalize_language(package.language)
+    lang_iso = LANGUAGE_PROFILES[lang_key]["iso"]
     raw_privacy = (privacy_override or package.privacy_status or studio_cfg.default_privacy_status or "private").lower()
     privacy_status = raw_privacy if raw_privacy in ("private", "unlisted", "public") else "private"
     is_synthetic = (
@@ -204,8 +226,8 @@ def upload_video_to_youtube(
             "description": description,
             "tags": tags,
             "categoryId": package.metadata.category_id,
-            "defaultLanguage": "en",
-            "defaultAudioLanguage": "en",
+            "defaultLanguage": lang_iso,
+            "defaultAudioLanguage": lang_iso,
         },
         "status": {
             "privacyStatus": privacy_status,
@@ -233,6 +255,7 @@ def upload_video_to_youtube(
         )
         storage.record_upload(record)
         storage.update_package_status(run_id, target_run_status)
+        cleanup_intermediate_scene_clips(run_id)
         return record
 
     # 4. Live YouTube Upload via Resumable Media
@@ -271,7 +294,8 @@ def upload_video_to_youtube(
         response_json=response
     )
 
-    # Record in idempotency ledger & update package status
+    # Record in idempotency ledger, update status, and purge intermediate scene_xx.mp4 clips
     storage.record_upload(record)
     storage.update_package_status(run_id, target_run_status)
+    cleanup_intermediate_scene_clips(run_id)
     return record

@@ -2,7 +2,9 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import html as html_lib
+import os
 import re
+import secrets
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +17,11 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.assemble import assemble_video
-from app.config import settings
+from app.config import LANGUAGE_PROFILES, normalize_language, settings
 from app.emailer import create_approval_record, send_approval_email
 from app.intake import extract_scene_number
 from app.logging_config import logger
-from app.models import ApprovalRecord, PrivacyStatus, SlotType, StudioConfig
+from app.models import ApprovalRecord, LanguageType, PrivacyStatus, SlotType, StudioConfig
 from app.pipeline import run_content_pipeline
 from app.scheduler import configure_scheduler_jobs, create_scheduler
 from app.storage import storage
@@ -37,6 +39,18 @@ from app.ui_helpers import (
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,80}$")
 _ACTIVE_SCHEDULER = None
 _APP_DIR = Path(__file__).resolve().parent
+
+
+def _compute_static_asset_version() -> str:
+    h = hashlib.sha256()
+    for rel in ("static/styles.css", "static/app.js"):
+        p = _APP_DIR / rel
+        if p.exists():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:10]
+
+
+_STATIC_ASSET_VERSION = _compute_static_asset_version()
 
 YOUTUBE_CATEGORIES = [
     ("28", "Science & Technology (28)"),
@@ -56,6 +70,14 @@ POPULAR_TTS_VOICES = [
     ("en-US-AriaNeural", "English (US) - Aria (Female)"),
     ("en-US-GuyNeural", "English (US) - Guy (Male)"),
     ("en-US-JennyNeural", "English (US) - Jenny (Female)"),
+    ("te-IN-MohanNeural", "Telugu (India) - Mohan (Male)"),
+    ("te-IN-ShrutiNeural", "Telugu (India) - Shruti (Female)"),
+    ("hi-IN-MadhurNeural", "Hindi (India) - Madhur (Male)"),
+    ("hi-IN-SwaraNeural", "Hindi (India) - Swara (Female)"),
+    ("ta-IN-ValluvarNeural", "Tamil (India) - Valluvar (Male)"),
+    ("ta-IN-PallaviNeural", "Tamil (India) - Pallavi (Female)"),
+    ("ml-IN-MidhunNeural", "Malayalam (India) - Midhun (Male)"),
+    ("ml-IN-SobhanaNeural", "Malayalam (India) - Sobhana (Female)"),
     ("en-GB-RyanNeural", "English (UK) - Ryan (Male)"),
     ("en-GB-SoniaNeural", "English (UK) - Sonia (Female)"),
     ("en-IN-PrabhatNeural", "English (India) - Prabhat (Male)"),
@@ -191,6 +213,7 @@ def health_check():
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "embedded_scheduler": settings.ENABLE_EMBEDDED_SCHEDULER,
+        "external_scheduler": settings.EXTERNAL_SCHEDULER_ACTIVE,
         "timezone": studio_cfg.timezone,
         "niche": studio_cfg.niche,
     }
@@ -226,7 +249,10 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             for f in (run_export_dir.glob("*.mp4") if run_export_dir.exists() else [])
             if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
         }
-        has_custom_vo = (run_export_dir / "voiceover.mp3").exists()
+        has_custom_vo = (
+            (run_export_dir / ".custom_voiceover").exists()
+            or ((run_export_dir / "voiceover.mp3").exists() and not (run_export_dir / ".tts_meta.json").exists())
+        )
         video_exists = (settings.FINAL_OUTPUT_DIR / p.run_id / "final_short.mp4").exists()
         is_published = p.status in ("uploaded_private", "uploaded")
 
@@ -243,9 +269,12 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             groups.append("failed")
             counts["failed"] += 1
 
+        lang_key = normalize_language(p.language)
         item = {
             "pkg": p,
             "niche": p.niche or studio_cfg.niche,
+            "language": lang_key,
+            "language_label": LANGUAGE_PROFILES[lang_key]["label"],
             "privacy": (p.privacy_status or studio_cfg.default_privacy_status or "private").lower(),
             "status_label": meta["label"],
             "status_tone": meta["tone"],
@@ -275,11 +304,13 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
         "log_lines": log_lines,
         "counts": counts,
         "categories": YOUTUBE_CATEGORIES,
+        "languages": [(k, v["label"]) for k, v in LANGUAGE_PROFILES.items()],
         "tts_voices": POPULAR_TTS_VOICES,
         "tts_voice_values": [v for v, _ in POPULAR_TTS_VOICES],
         "groq_models": POPULAR_GROQ_MODELS,
         "morning_hhmm": cron_to_hhmm(studio_cfg.morning_cron) or "07:00",
         "evening_hhmm": cron_to_hhmm(studio_cfg.evening_cron) or "16:30",
+        "asset_version": _STATIC_ASSET_VERSION,
     }
 
 
@@ -364,19 +395,22 @@ def api_generate_run(
     mock: bool = Query(False),
     niche: Optional[str] = Query(None),
     topic: Optional[str] = Query(None),
+    language: Optional[LanguageType] = Query(None),
 ):
-    """Trigger content pipeline via UI with optional niche/topic override."""
+    """Trigger content pipeline via UI with optional niche/topic/language override."""
     try:
         pkg = run_content_pipeline(
             slot=slot,
             force_mock=mock,
             custom_topic=topic,
             niche_override=niche,
+            language_override=language,
         )
         return {
             "status": "success",
             "run_id": pkg.run_id,
             "niche": pkg.niche,
+            "language": pkg.language,
             "topic": pkg.topic,
             "title": pkg.metadata.title,
             "duration": pkg.total_duration_seconds,
@@ -414,6 +448,7 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
     run_export_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded = []
+    chunk_size = 1024 * 1024  # 1 MiB streaming chunks to avoid buffering full videos in RAM
     for upload in files:
         raw_name = Path(upload.filename or "").name
         if not raw_name:
@@ -431,11 +466,27 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
             )
 
         target_path = run_export_dir / raw_name
-        content = await upload.read()
-        if len(content) < 1024:
-            raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
-        target_path.write_bytes(content)
-        uploaded.append(raw_name)
+        tmp_path = run_export_dir / f".{raw_name}.part.{secrets.token_hex(4)}"
+        total_bytes = 0
+        try:
+            with open(tmp_path, "wb") as out_file:
+                while True:
+                    chunk = await upload.read(chunk_size)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    total_bytes += len(chunk)
+            if total_bytes < 1024:
+                raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
+            os.replace(tmp_path, target_path)
+            if lower_name == "voiceover.mp3":
+                (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
+                (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
+            uploaded.append(raw_name)
+        finally:
+            await upload.close()
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
     found_numbers = {
         extract_scene_number(f.name)
@@ -648,6 +699,7 @@ def review_page(request: Request, run_id: str, token: str = Query(..., descripti
             "token": token,
             "selected_privacy": selected_privacy,
             "is_synthetic": is_synthetic,
+            "asset_version": _STATIC_ASSET_VERSION,
         },
     )
 
@@ -718,6 +770,7 @@ def approve_run(
             "message": upload_result_msg,
             "studio_url": studio_url,
             "timestamp": now_utc,
+            "asset_version": _STATIC_ASSET_VERSION,
         },
     )
 
@@ -747,5 +800,6 @@ def reject_run(request: Request, run_id: str, token: str = Form(...), comments: 
             "message": f"This run was closed without uploading to YouTube.<br><b>Note:</b> {safe_comments}",
             "studio_url": "",
             "timestamp": now_utc,
+            "asset_version": _STATIC_ASSET_VERSION,
         },
     )

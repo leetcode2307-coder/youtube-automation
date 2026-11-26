@@ -221,3 +221,73 @@ def test_ffmpeg_assembly_heterogeneous_clips_and_tts_word_boundary(tmp_path, mon
     srt_file = settings.FINAL_OUTPUT_DIR / run_id / "captions.srt"
     assert srt_file.exists()
     assert "00:00:" in srt_file.read_text(encoding="utf-8")
+
+
+def test_ai_voiceover_default_and_tts_regeneration(tmp_path, monkeypatch):
+    """Verify AI-generated voiceover is default ON, regenerates on narration edit, and preserves custom uploads."""
+    from app.assemble import _should_regenerate_tts
+    from app.models import StudioConfig
+
+    cfg = StudioConfig()
+    assert cfg.use_ai_voiceover is True
+    assert cfg.audio_mode == "ai_voiceover"
+
+    test_data = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data / "approvals.json")
+    settings.ensure_directories()
+
+    run_id = "test_tts_regen"
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    run_export_dir.mkdir(parents=True)
+    for i in range(1, 4):
+        create_synthetic_clip(run_export_dir / f"scene_0{i}.mp4", duration_s=11)
+
+    scenes = [
+        Scene(
+            scene_number=i,
+            duration_seconds=11,
+            narration=f"AI voiceover narration scene {i}.",
+            visual_prompt=f"9:16 vertical cinematic scene {i}",
+            export_filename=f"scene_0{i}.mp4",
+        )
+        for i in range(1, 4)
+    ]
+    pkg = ProductionPackage(
+        run_id=run_id,
+        slot="morning",
+        created_at_utc="2026-11-25T01:30:00Z",
+        scheduled_at_local="2026-11-25 07:00:00 IST",
+        topic="AI Voiceover Default Check",
+        hook="Testing default AI-generated voiceover.",
+        narration_full="Initial script narration for automatic Edge-TTS voiceover generation.",
+        scenes=scenes,
+        total_duration_seconds=33,
+        metadata=SEOMetadata(
+            title="AI Voiceover Default Test",
+            description="Verifies AI voiceover runs by default and refreshes on narration edit.",
+            hashtags=["#AI", "#Voiceover", "#Shorts"],
+            tags=["ai", "voiceover", "tts", "shorts"],
+        ),
+        status="awaiting_flow_export",
+    )
+    storage.save_package(pkg)
+
+    out_mp4 = assemble_video(run_id)
+    assert out_mp4.exists()
+    vo_path = run_export_dir / "voiceover.mp3"
+    tts_meta = run_export_dir / ".tts_meta.json"
+    custom_marker = run_export_dir / ".custom_voiceover"
+    assert vo_path.exists()
+    assert tts_meta.exists()
+    assert not _should_regenerate_tts(vo_path, tts_meta, custom_marker, pkg.narration_full, "en-US-ChristopherNeural")
+    assert _should_regenerate_tts(vo_path, tts_meta, custom_marker, "Edited narration text!", "en-US-ChristopherNeural")
+
+    # Mark as custom user upload -> must NOT regenerate even when narration changes
+    custom_marker.write_text("1", encoding="utf-8")
+    assert not _should_regenerate_tts(vo_path, tts_meta, custom_marker, "Edited narration text!", "en-US-ChristopherNeural")

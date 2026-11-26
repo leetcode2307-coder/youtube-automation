@@ -179,6 +179,7 @@ class StorageManager:
         """Build default StudioConfig from environment/Settings values."""
         return StudioConfig(
             studio_name=settings.STUDIO_NAME,
+            language=settings.DEFAULT_LANGUAGE,
             niche=settings.DEFAULT_NICHE,
             niche_domains=settings.DEFAULT_NICHE_DOMAINS,
             audience_tone=settings.DEFAULT_AUDIENCE_TONE,
@@ -188,6 +189,8 @@ class StorageManager:
             synthetic_media_default=settings.DEFAULT_SYNTHETIC_MEDIA,
             groq_model=settings.GROQ_MODEL,
             tts_voice=settings.TTS_VOICE,
+            use_ai_voiceover=settings.DEFAULT_USE_AI_VOICEOVER,
+            audio_mode="ai_voiceover" if settings.DEFAULT_USE_AI_VOICEOVER else "clip_audio_only",
             morning_cron=settings.MORNING_CRON,
             evening_cron=settings.EVENING_CRON,
             timezone=settings.TIMEZONE,

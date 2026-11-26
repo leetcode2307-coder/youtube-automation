@@ -7,7 +7,16 @@
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version|default('1') }}">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("studio-theme");
+        if (!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
+        if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+      } catch (_e) {}
+    })();
+  </script>
 </head>
 <body>
   <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;">
@@ -34,7 +43,10 @@
         This one-time approval link was consumed at <span class="mono">{{ timestamp }}</span> and cannot be reused.
       </p>
 
-      <a href="/" class="btn btn-secondary">Back to Studio Dashboard</a>
+      <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary" onclick="var cur=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';var nxt=cur==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',nxt);try{localStorage.setItem('studio-theme',nxt);}catch(_e){}">Toggle Theme</button>
+        <a href="/" class="btn btn-secondary">Back to Studio Dashboard</a>
+      </div>
     </div>
   </div>
 </body>

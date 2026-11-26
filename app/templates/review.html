@@ -7,7 +7,24 @@
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version|default('1') }}">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("studio-theme");
+        if (!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
+        if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+      } catch (_e) {}
+    })();
+    function toggleReviewTheme() {
+      var cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      var next = cur === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("studio-theme", next); } catch (_e) {}
+      var lbl = document.getElementById("reviewThemeLabel");
+      if (lbl) lbl.textContent = next === "dark" ? "Light Mode" : "Dark Mode";
+    }
+  </script>
 </head>
 <body>
   <div class="review-page">
@@ -16,11 +33,17 @@
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
           <span class="badge badge-purple">Waiting for your approval</span>
           <span class="badge badge-neutral">{{ package.niche or studio_cfg.niche }}</span>
+          <span class="badge badge-info">{{ (package.language or 'english')|capitalize }}</span>
           <span class="mono" style="color:var(--color-muted-foreground);">{{ package.run_id }}</span>
         </div>
         <h1 style="margin:0; font-size:20px;">Review & Approval Gate</h1>
       </div>
-      <a href="/#videos" class="btn btn-secondary btn-sm">Back to Studio</a>
+      <div class="btn-group">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleReviewTheme()">
+          <span id="reviewThemeLabel">Dark Mode</span>
+        </button>
+        <a href="/#videos" class="btn btn-secondary btn-sm">Back to Studio</a>
+      </div>
     </div>
 
     <div class="review-grid">
@@ -105,6 +128,18 @@
           </div>
         </div>
 
+        {% if package.characters %}
+        <div class="card card-pad">
+          <h3 class="card-title" style="margin-bottom:10px;">Consistent Characters ({{ package.characters|length }})</h3>
+          {% for ch in package.characters %}
+          <div class="scene-card">
+            <div style="font-weight:700; font-size:13px; margin-bottom:2px;">{{ ch.name }} <span style="font-weight:500; color:var(--color-muted-foreground);">({{ ch.role }})</span></div>
+            <div style="font-size:12px; color:var(--color-foreground-secondary);">{{ ch.visual_description }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
         <div class="card card-pad">
           <h3 class="card-title" style="margin-bottom:10px;">Scene Breakdown ({{ package.scenes|length }} scenes)</h3>
           {% for s in package.scenes %}
@@ -121,5 +156,11 @@
       </div>
     </div>
   </div>
+  <script>
+    (function () {
+      var lbl = document.getElementById("reviewThemeLabel");
+      if (lbl) lbl.textContent = document.documentElement.getAttribute("data-theme") === "dark" ? "Light Mode" : "Dark Mode";
+    })();
+  </script>
 </body>
 </html>

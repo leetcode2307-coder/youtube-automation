@@ -7,7 +7,35 @@
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version|default('1') }}">
+  <script>
+    (function () {
+      function getTheme() {
+        try {
+          var t = localStorage.getItem("studio-theme");
+          if (t === "dark" || t === "light") return t;
+        } catch (_e) {}
+        return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      function syncThemeUi(active) {
+        document.documentElement.setAttribute("data-theme", active);
+        var lbl = document.getElementById("themeToggleLabel");
+        var btn = document.getElementById("themeToggleBtn");
+        if (lbl) lbl.textContent = active === "dark" ? "Light Mode" : "Dark Mode";
+        if (btn) btn.setAttribute("aria-pressed", String(active === "dark"));
+      }
+      window.applyTheme = function (theme) {
+        var active = theme === "dark" ? "dark" : "light";
+        try { localStorage.setItem("studio-theme", active); } catch (_e) {}
+        syncThemeUi(active);
+      };
+      window.toggleTheme = function () {
+        var cur = document.documentElement.getAttribute("data-theme") || getTheme();
+        window.applyTheme(cur === "dark" ? "light" : "dark");
+      };
+      syncThemeUi(getTheme());
+    })();
+  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -95,6 +123,10 @@
         <div class="topbar-actions">
           <span class="badge badge-neutral">Niche: {{ studio_cfg.niche }}</span>
           <span class="badge badge-info">Default: {{ studio_cfg.default_privacy_status|capitalize }}</span>
+          <button id="themeToggleBtn" type="button" class="btn btn-secondary btn-sm" onclick="toggleTheme()" aria-pressed="false" title="Switch light or dark theme">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <span id="themeToggleLabel">Dark Mode</span>
+          </button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.reload()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Refresh
@@ -148,14 +180,22 @@
             <div class="card-header" style="margin-bottom:0;">
               <div>
                 <h2 class="card-title">Create a New YouTube Short</h2>
-                <p class="card-subtitle">Generates a fresh topic, voiceover script, SEO metadata, and scene prompts for Google Flow.</p>
+                <p class="card-subtitle">Generates a fresh topic, consistent character sheet, multi-language voiceover script, and 8–15s Google Flow Omni prompts.</p>
               </div>
               <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('settings')">Change Studio Defaults</button>
             </div>
             <div class="create-grid">
               <div class="field">
                 <label for="quickNiche">Topic Niche / Interest</label>
-                <input id="quickNiche" class="input" type="text" value="{{ studio_cfg.niche }}" placeholder="e.g. AI Engineering, Space, Personal Finance">
+                <input id="quickNiche" class="input" type="text" value="{{ studio_cfg.niche }}" placeholder="e.g. AI Engineering, Space, Devotional">
+              </div>
+              <div class="field">
+                <label for="quickLanguage">Language</label>
+                <select id="quickLanguage" class="select">
+                  {% for lkey, llabel in languages %}
+                  <option value="{{ lkey }}" {{ 'selected' if studio_cfg.language == lkey else '' }}>{{ llabel }}</option>
+                  {% endfor %}
+                </select>
               </div>
               <div class="field">
                 <label for="quickTopic">Specific Topic (Optional)</label>
@@ -270,6 +310,7 @@
                     {{ item.status_label }}
                   </span>
                   <span class="badge badge-neutral">{{ p.slot|capitalize }}</span>
+                  <span class="badge badge-neutral">{{ item.language_label }}</span>
                   <span class="badge badge-neutral">{{ item.niche }}</span>
                   <span class="badge badge-info">{{ item.privacy|capitalize }}</span>
                   {% if p.metadata.synthetic_media_disclosure %}
@@ -277,7 +318,8 @@
                   {% endif %}
                 </div>
                 <div class="mono" style="color:var(--color-muted-foreground);">
-                  {{ p.run_id }} &bull; {{ p.total_duration_seconds }}s &bull; {{ item.clips_ready }}/{{ p.scenes|length }} clips
+                  {{ p.run_id }} &bull; {{ p.total_duration_seconds }}s
+                  {% if not item.is_published %}&bull; {{ item.clips_ready }}/{{ p.scenes|length }} clips{% endif %}
                 </div>
               </div>
 
@@ -319,6 +361,44 @@
               </div>
               {% endif %}
 
+              {% if item.is_published %}
+              <div class="clip-list">
+                <span class="clip-chip ready">Published to YouTube &mdash; Final Short &amp; captions retained</span>
+                <span class="clip-chip">Intermediate scene_xx.mp4 clips cleaned up</span>
+              </div>
+              {% else %}
+              {% if p.characters %}
+              <div class="character-box">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <strong>Consistent Characters (Add in Google Flow first)</strong>
+                  <span style="font-size:12px; color:var(--color-muted-foreground);">Use in Google Flow &rarr; Characters so faces &amp; outfits stay identical across scenes</span>
+                </div>
+                <div class="character-grid">
+                  {% for ch in p.characters %}
+                  <div class="character-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px;">
+                      <strong style="font-size:13px;">{{ ch.name }}</strong>
+                      <button type="button" class="btn btn-secondary btn-sm" style="min-height:26px; padding:2px 8px; font-size:11px;"
+                              data-copy="{{ ch.visual_description }}" data-label="{{ ch.name }}"
+                              onclick="copyText(this.dataset.copy, this.dataset.label)">Copy</button>
+                    </div>
+                    <div style="font-size:11px; color:var(--color-muted-foreground); margin-bottom:4px;">{{ ch.role }}</div>
+                    <div style="font-size:12px; color:var(--color-foreground-secondary);">{{ ch.visual_description }}</div>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endif %}
+
+              <div class="flow-guide-box">
+                <strong>How to generate clips in Google AI Pro (Google Flow Omni, 8&ndash;15s):</strong>
+                <ol>
+                  <li>Open <b>Google Flow</b> (9:16 vertical), select the <b>Omni</b> model (8&ndash;15s per clip), and add the <b>Characters</b> above first for consistency.</li>
+                  <li>Click <b>View Visual Prompts</b> below and generate clips <b>one by one</b> matching each scene's target duration.</li>
+                  <li><b>Download the project ZIP</b> from Google Flow, <b>extract</b> the ZIP, verify names <span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>, and upload them below.</li>
+                </ol>
+              </div>
+
               <!-- Scene Clips Checklist -->
               <div class="clip-list">
                 {% for sc in p.scenes %}
@@ -327,7 +407,11 @@
                 </span>
                 {% endfor %}
                 {% if item.has_custom_vo %}
-                <span class="clip-chip ready">Ready: voiceover.mp3</span>
+                <span class="clip-chip ready">Ready: voiceover.mp3 (Custom)</span>
+                {% elif studio_cfg.use_ai_voiceover %}
+                <span class="clip-chip ready">AI Voiceover: Auto ({{ studio_cfg.audio_mode.replace('_', ' ') }})</span>
+                {% else %}
+                <span class="clip-chip">Audio: Uploaded Clip Audio</span>
                 {% endif %}
               </div>
 
@@ -342,11 +426,12 @@
                    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); document.getElementById('clips-input-{{ p.run_id }}').click();}"
                    onclick="document.getElementById('clips-input-{{ p.run_id }}').click()">
                 <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.mp3" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
-                <b>Drop or click to upload clips</b> (<span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>)
+                <b>Drop or click to upload extracted clips</b> (<span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>)
                 {% if studio_cfg.auto_assemble_on_upload %}
-                &mdash; automatically assembles video &amp; opens review once all clips arrive.
+                &mdash; automatically assembles video &amp; opens review once all clips arrive (scene clips auto-clean after YouTube publish).
                 {% endif %}
               </div>
+              {% endif %}
 
               <div class="progress-banner" id="progress-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
 
@@ -655,6 +740,14 @@
                   <input id="cfg-studio_name" class="input" type="text" value="{{ studio_cfg.studio_name }}" required>
                 </div>
                 <div class="field">
+                  <label for="cfg-language">Default Content Language</label>
+                  <select id="cfg-language" class="select">
+                    {% for lkey, llabel in languages %}
+                    <option value="{{ lkey }}" {{ 'selected' if studio_cfg.language == lkey else '' }}>{{ llabel }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="field">
                   <label for="cfg-niche">Channel Niche / Interest</label>
                   <input id="cfg-niche" class="input" type="text" value="{{ studio_cfg.niche }}" required>
                 </div>
@@ -710,6 +803,14 @@
                   <input id="cfg-tts_voice" class="input" type="text" value="{{ studio_cfg.tts_voice }}" aria-label="Custom TTS voice ID">
                 </div>
                 <div class="field">
+                  <label for="cfg-audio_mode">Video Voiceover &amp; Audio Mode</label>
+                  <select id="cfg-audio_mode" class="select">
+                    <option value="ai_voiceover" {{ 'selected' if studio_cfg.audio_mode == 'ai_voiceover' else '' }}>AI-Generated Voiceover Only (Default)</option>
+                    <option value="ai_plus_clip_audio" {{ 'selected' if studio_cfg.audio_mode == 'ai_plus_clip_audio' else '' }}>AI Voiceover + Soft Clip Audio</option>
+                    <option value="clip_audio_only" {{ 'selected' if studio_cfg.audio_mode == 'clip_audio_only' else '' }}>Original Clip Audio Only (Fallback to AI Voiceover)</option>
+                  </select>
+                </div>
+                <div class="field">
                   <label for="cfg-default_privacy_status">Default YouTube Upload Visibility</label>
                   <select id="cfg-default_privacy_status" class="select">
                     <option value="private" {{ 'selected' if studio_cfg.default_privacy_status == 'private' else '' }}>Private (Review in YouTube Studio first)</option>
@@ -733,6 +834,10 @@
                 </div>
 
                 <div class="field full">
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-use_ai_voiceover" {{ 'checked' if studio_cfg.use_ai_voiceover else '' }}>
+                    <span><b>AI-Generated Voiceover (Default ON):</b> Automatically generate neural Edge-TTS voiceover &amp; captions from the script in the video's language.</span>
+                  </label>
                   <label class="checkbox-row">
                     <input type="checkbox" id="cfg-synthetic_media_default" {{ 'checked' if studio_cfg.synthetic_media_default else '' }}>
                     <span><b>AI-Generated Content Disclosure (Default ON):</b> Tick YouTube's altered/synthetic content flag automatically when uploading.</span>
@@ -771,7 +876,7 @@
       </div>
       <div id="modalBody" class="modal-body"></div>
       <div class="modal-foot">
-        <span style="font-size:12px; color:var(--color-muted-foreground);">Copy these prompts into Google Flow (9:16 portrait mode).</span>
+        <span style="font-size:12px; color:var(--color-muted-foreground);">Add Characters first, generate 8&ndash;15s Omni clips one by one (9:16), download ZIP, extract &amp; upload.</span>
         <button type="button" class="btn btn-primary btn-sm" onclick="copyBrief()">Copy All Prompts</button>
       </div>
     </div>
@@ -785,6 +890,6 @@
       autoOpenReview: {{ 'true' if studio_cfg.auto_open_review_on_assemble else 'false' }}
     };
   </script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ asset_version|default('1') }}"></script>
 </body>
 </html>

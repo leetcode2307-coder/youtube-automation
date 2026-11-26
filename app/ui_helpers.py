@@ -167,10 +167,18 @@ def _next_fire_info(cron_expr: str, tz_name: str) -> Dict[str, str]:
 
 def get_scheduler_summary(studio_cfg: StudioConfig, active_scheduler: Any = None) -> Dict[str, Any]:
     """Compute real scheduler state and next execution times in configured timezone."""
-    is_active = bool(
+    is_embedded = bool(
         (active_scheduler is not None and getattr(active_scheduler, "running", False))
         or settings.ENABLE_EMBEDDED_SCHEDULER
     )
+    is_external = bool(settings.EXTERNAL_SCHEDULER_ACTIVE)
+    is_active = is_embedded or is_external
+    if is_embedded:
+        status_label = "Active (Automatic)"
+    elif is_external:
+        status_label = f"Active ({settings.EXTERNAL_SCHEDULER_LABEL})"
+    else:
+        status_label = "Inactive (Manual / External Cron)"
     tz_label = f"{studio_cfg.timezone} (IST)" if studio_cfg.timezone == "Asia/Kolkata" else studio_cfg.timezone
 
     morning_next = _next_fire_info(studio_cfg.morning_cron, studio_cfg.timezone)
@@ -185,7 +193,7 @@ def get_scheduler_summary(studio_cfg: StudioConfig, active_scheduler: Any = None
 
     return {
         "active": is_active,
-        "status_label": "Active (Automatic)" if is_active else "Inactive (Manual / External Cron)",
+        "status_label": status_label,
         "timezone_label": tz_label,
         "morning_time": format_cron_human(studio_cfg.morning_cron),
         "evening_time": format_cron_human(studio_cfg.evening_cron),
@@ -212,7 +220,11 @@ def get_system_health(studio_cfg: StudioConfig, active_scheduler: Any = None) ->
     scheduler_active = bool(
         (active_scheduler is not None and getattr(active_scheduler, "running", False))
         or settings.ENABLE_EMBEDDED_SCHEDULER
+        or settings.EXTERNAL_SCHEDULER_ACTIVE
     )
+    scheduler_detail = f"{studio_cfg.timezone} ({format_cron_human(studio_cfg.morning_cron)} & {format_cron_human(studio_cfg.evening_cron)})"
+    if settings.EXTERNAL_SCHEDULER_ACTIVE and not settings.ENABLE_EMBEDDED_SCHEDULER:
+        scheduler_detail = f"{scheduler_detail} • {settings.EXTERNAL_SCHEDULER_LABEL}"
 
     if yt_ready:
         yt_state, yt_tone, yt_detail = "Connected", "success", "OAuth token ready for private/unlisted/public uploads."
@@ -250,7 +262,7 @@ def get_system_health(studio_cfg: StudioConfig, active_scheduler: Any = None) ->
             "name": "Daily Scheduler",
             "status": "Running" if scheduler_active else "Manual Only",
             "tone": "success" if scheduler_active else "info",
-            "detail": f"{studio_cfg.timezone} ({format_cron_human(studio_cfg.morning_cron)} & {format_cron_human(studio_cfg.evening_cron)})",
+            "detail": scheduler_detail,
         },
     ]
 

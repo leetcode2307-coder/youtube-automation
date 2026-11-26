@@ -59,46 +59,50 @@ class MockStructuredOutput:
         elif "Script" in schema_name:
             return self.schema(
                 hook="Stop hardcoding custom tool connectors for every single AI agent.",
+                characters=[
+                    {
+                        "name": "Aarav (AI Architect)",
+                        "role": "Lead Engineer / Host",
+                        "visual_description": "Late-20s South Asian male software architect with short dark hair, thin titanium glasses, slate-blue hoodie over white tee, focused demeanor, cool cyan studio rim lighting, photorealistic 9:16 cinema style",
+                    },
+                    {
+                        "name": "Core (MCP Hub)",
+                        "role": "Visual AI Metaphor",
+                        "visual_description": "Floating translucent crystal cube with glowing cyan and amber fiber-optic circuitry over a matte obsidian desk, crisp reflections, futuristic sci-fi realism",
+                    },
+                ],
                 scenes=[
                     {
                         "scene_number": 1,
-                        "duration_seconds": 6,
-                        "narration": "Building AI agents today feels like writing custom API drivers for every single database and tool.",
-                        "visual_prompt": "Cinematic 3D render of tangled glowing data cables connecting haphazardly to an AI brain, dark background, neon accents, 9:16 vertical video",
+                        "duration_seconds": 9,
+                        "narration": "Building AI agents today feels like writing fragile custom API drivers for every single database and tool.",
+                        "visual_prompt": "Medium close-up 9:16 shot of Aarav (AI Architect) surrounded by tangled glowing cables in a moody dark server studio, camera slow push-in, cyan rim light",
                         "on_screen_text": "The Agent Integration Problem",
                         "export_filename": "scene_01.mp4"
                     },
                     {
                         "scene_number": 2,
-                        "duration_seconds": 8,
-                        "narration": "That's why Model Context Protocol, or MCP, is becoming the USB-C standard for LLMs.",
-                        "visual_prompt": "Futuristic sleek glowing USB-C connector snapping effortlessly into a crystalline AI core, seamless connection, 9:16 vertical video",
+                        "duration_seconds": 10,
+                        "narration": "That is why Model Context Protocol, or MCP, is rapidly becoming the universal USB-C standard for LLMs.",
+                        "visual_prompt": "Dynamic 9:16 tracking shot as Aarav (AI Architect) snaps a sleek glowing USB-C fiber connector into Core (MCP Hub), cables detangling into clean light beams",
                         "on_screen_text": "MCP = USB-C for AI",
                         "export_filename": "scene_02.mp4"
                     },
                     {
                         "scene_number": 3,
-                        "duration_seconds": 8,
-                        "narration": "Instead of writing bespoke code, your agent queries an MCP server that exposes tools, prompts, and resources uniformly.",
-                        "visual_prompt": "Diagram animation showing an AI Agent connecting uniformly to database, github, and web tools via clean modular blocks, 9:16 vertical video",
+                        "duration_seconds": 10,
+                        "narration": "Instead of writing bespoke glue code, your agent queries an MCP server that exposes tools, prompts, and resources uniformly.",
+                        "visual_prompt": "Vertical 9:16 holographic architecture orbiting Core (MCP Hub), uniform glowing links snapping neatly to database, GitHub, and web tool nodes, smooth camera orbit",
                         "on_screen_text": "Standardized JSON-RPC Tools",
                         "export_filename": "scene_03.mp4"
                     },
                     {
                         "scene_number": 4,
-                        "duration_seconds": 8,
-                        "narration": "This decouples your agent runtime from the tools it uses, giving you instant modularity and sandboxed security.",
-                        "visual_prompt": "Clean glowing security barrier with encrypted data flowing smoothly between isolated microservice layers, 9:16 vertical video",
-                        "on_screen_text": "Sandboxed & Decoupled",
-                        "export_filename": "scene_04.mp4"
-                    },
-                    {
-                        "scene_number": 5,
-                        "duration_seconds": 6,
-                        "narration": "Are you already using MCP in production? Drop your thoughts below and subscribe for daily AI engineering breakdowns!",
-                        "visual_prompt": "Dynamic motion graphics with animated subscribe icon, code terminal, and modern minimalist typography, 9:16 vertical video",
+                        "duration_seconds": 9,
+                        "narration": "This decouples your runtime for instant modularity and sandboxed security. Subscribe for daily AI engineering breakdowns!",
+                        "visual_prompt": "Aarav (AI Architect) smiling confidently beside glowing Core (MCP Hub) behind a clean security shield glass layer, crisp studio lighting, 9:16 vertical video",
                         "on_screen_text": "Subscribe for Daily AI Engineering",
-                        "export_filename": "scene_05.mp4"
+                        "export_filename": "scene_04.mp4"
                     }
                 ],
                 cta="Subscribe for daily AI Engineering deep dives!"

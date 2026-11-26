@@ -1,8 +1,76 @@
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Dict, Literal, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+LANGUAGE_PROFILES: Dict[str, Dict[str, str]] = {
+    "english": {
+        "label": "English",
+        "iso": "en",
+        "default_voice": "en-US-ChristopherNeural",
+        "script_instruction": (
+            "Write spoken narration, hook, on-screen text, CTA, and YouTube SEO metadata "
+            "in clear, punchy English."
+        ),
+    },
+    "telugu": {
+        "label": "Telugu (తెలుగు)",
+        "iso": "te",
+        "default_voice": "te-IN-MohanNeural",
+        "script_instruction": (
+            "Write spoken narration, hook, on-screen text, CTA, and YouTube title/description/hashtags "
+            "in natural conversational Telugu script (తెలుగు) suitable for voiceover and Telugu Shorts viewers "
+            "(you may include bilingual Telugu + English search keywords in tags)."
+        ),
+    },
+    "hindi": {
+        "label": "Hindi (हिन्दी)",
+        "iso": "hi",
+        "default_voice": "hi-IN-MadhurNeural",
+        "script_instruction": (
+            "Write spoken narration, hook, on-screen text, CTA, and YouTube title/description/hashtags "
+            "in natural conversational Hindi (हिन्दी Devanagari script) suitable for voiceover and Hindi Shorts viewers "
+            "(you may include bilingual Hindi + English search keywords in tags)."
+        ),
+    },
+    "tamil": {
+        "label": "Tamil (தமிழ்)",
+        "iso": "ta",
+        "default_voice": "ta-IN-ValluvarNeural",
+        "script_instruction": (
+            "Write spoken narration, hook, on-screen text, CTA, and YouTube title/description/hashtags "
+            "in natural conversational Tamil script (தமிழ்) suitable for voiceover and Tamil Shorts viewers "
+            "(you may include bilingual Tamil + English search keywords in tags)."
+        ),
+    },
+    "malayalam": {
+        "label": "Malayalam (മലയാളം)",
+        "iso": "ml",
+        "default_voice": "ml-IN-MidhunNeural",
+        "script_instruction": (
+            "Write spoken narration, hook, on-screen text, CTA, and YouTube title/description/hashtags "
+            "in natural conversational Malayalam script (മലയാളം) suitable for voiceover and Malayalam Shorts viewers "
+            "(you may include bilingual Malayalam + English search keywords in tags)."
+        ),
+    },
+}
+
+
+def normalize_language(language: Optional[str]) -> str:
+    cleaned = (language or "english").strip().lower()
+    return cleaned if cleaned in LANGUAGE_PROFILES else "english"
+
+
+def resolve_tts_voice(language: Optional[str], configured_voice: Optional[str] = None) -> str:
+    """Return a matching Edge-TTS voice for the package language when configured_voice is for a different locale."""
+    lang_key = normalize_language(language)
+    profile = LANGUAGE_PROFILES[lang_key]
+    voice = (configured_voice or "").strip()
+    if voice and voice.lower().startswith(f"{profile['iso']}-"):
+        return voice
+    return profile["default_voice"]
 
 
 class Settings(BaseSettings):
@@ -19,6 +87,7 @@ class Settings(BaseSettings):
 
     # Default Studio & Niche Settings (Overridable via UI in data/studio_settings.json)
     STUDIO_NAME: str = "AI Engineering Shorts Studio"
+    DEFAULT_LANGUAGE: Literal["english", "telugu", "hindi", "tamil", "malayalam"] = "english"
     DEFAULT_NICHE: str = "AI Engineering"
     DEFAULT_NICHE_DOMAINS: str = "LLMs, RAG, AI Agents, Model Context Protocol, Inference Optimization, Vector Databases"
     DEFAULT_AUDIENCE_TONE: str = "Clear, engaging, high-retention storytelling"
@@ -33,6 +102,8 @@ class Settings(BaseSettings):
     MORNING_CRON: str = "0 7 * * *"
     EVENING_CRON: str = "30 16 * * *"
     ENABLE_EMBEDDED_SCHEDULER: bool = False
+    EXTERNAL_SCHEDULER_ACTIVE: bool = False
+    EXTERNAL_SCHEDULER_LABEL: str = "Modal Cron (UI Synced)"
 
     # Directory Structure
     DATA_DIR: Path = Path("data")
@@ -71,6 +142,7 @@ class Settings(BaseSettings):
 
     # TTS & FFmpeg Settings
     TTS_VOICE: str = "en-US-ChristopherNeural"
+    DEFAULT_USE_AI_VOICEOVER: bool = True
     MAX_RETRIES: int = 3
     FFMPEG_THREADS: int = 2
 

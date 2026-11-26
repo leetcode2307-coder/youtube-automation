@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 SlotType = Literal["morning", "evening"]
 PrivacyStatus = Literal["private", "unlisted", "public"]
+LanguageType = Literal["english", "telugu", "hindi", "tamil", "malayalam"]
+AudioModeType = Literal["ai_voiceover", "ai_plus_clip_audio", "clip_audio_only"]
 RunStatus = Literal[
     "scheduled",
     "generating",
@@ -19,11 +21,20 @@ RunStatus = Literal[
 ]
 
 
+class CharacterProfile(BaseModel):
+    name: str = Field(min_length=2, description="Short character identifier to register in Google Flow Characters")
+    role: str = Field(default="Main Character", description="Story role, e.g. Protagonist, Host, Narrator")
+    visual_description: str = Field(
+        min_length=15,
+        description="Immutable appearance prompt (age, attire, facial features, palette, style) for Google Flow Character consistency",
+    )
+
+
 class Scene(BaseModel):
     scene_number: int = Field(ge=1, le=10, description="1-indexed sequence number of the scene")
-    duration_seconds: int = Field(ge=3, le=15, description="Scene duration in seconds")
+    duration_seconds: int = Field(ge=3, le=15, description="Scene duration in seconds (8-15s for Google Flow Omni)")
     narration: str = Field(min_length=5, description="Spoken narration for this scene")
-    visual_prompt: str = Field(min_length=15, description="Detailed visual prompt tailored for Google Flow 9:16 vertical video")
+    visual_prompt: str = Field(min_length=15, description="Detailed visual prompt tailored for Google Flow Omni 9:16 vertical video")
     on_screen_text: str = Field(default="", description="Key text overlay to display during the scene")
     export_filename: str = Field(description="Expected exported clip filename, e.g. scene_01.mp4")
 
@@ -71,9 +82,11 @@ class ProductionPackage(BaseModel):
     created_at_utc: str
     scheduled_at_local: str
     niche: str = Field(default="", description="Content niche used to generate this run")
+    language: LanguageType = Field(default="english", description="Target language for script, voiceover, and YouTube metadata")
     topic: str = Field(min_length=5, description="Specific topic for this video")
     hook: str = Field(min_length=10, description="0-3s high-retention hook")
     narration_full: str = Field(min_length=30, description="Complete narration text for voiceover")
+    characters: List[CharacterProfile] = Field(default_factory=list, description="Recurring character definitions for Google Flow consistency")
     scenes: List[Scene] = Field(min_length=3, max_length=8, description="Ordered scenes")
     total_duration_seconds: int = Field(ge=30, le=45, description="Total target duration strictly between 30 and 45s")
     metadata: SEOMetadata
@@ -87,6 +100,7 @@ class ProductionPackage(BaseModel):
 class StudioConfig(BaseModel):
     """UI-editable configuration for niche, AI generation, voice, schedule, and YouTube upload defaults."""
     studio_name: str = Field(default="YouTube Shorts Studio", min_length=2, max_length=80)
+    language: LanguageType = Field(default="english")
     niche: str = Field(default="AI Engineering", min_length=2, max_length=120)
     niche_domains: str = Field(default="LLMs, RAG, AI Agents, Model Context Protocol, Inference Optimization, Vector Databases")
     audience_tone: str = Field(default="Clear, engaging, high-retention storytelling")
@@ -96,13 +110,15 @@ class StudioConfig(BaseModel):
     synthetic_media_default: bool = Field(default=True)
     groq_model: str = Field(default="llama-3.3-70b-versatile", min_length=2)
     tts_voice: str = Field(default="en-US-ChristopherNeural", min_length=2)
+    use_ai_voiceover: bool = Field(default=True)
+    audio_mode: AudioModeType = Field(default="ai_voiceover")
     morning_cron: str = Field(default="0 7 * * *")
     evening_cron: str = Field(default="30 16 * * *")
     timezone: str = Field(default="Asia/Kolkata")
     min_duration_seconds: int = Field(default=30, ge=30, le=44)
     max_duration_seconds: int = Field(default=45, ge=31, le=45)
-    min_scenes: int = Field(default=4, ge=3, le=7)
-    max_scenes: int = Field(default=6, ge=3, le=8)
+    min_scenes: int = Field(default=3, ge=3, le=7)
+    max_scenes: int = Field(default=5, ge=3, le=8)
     auto_assemble_on_upload: bool = Field(default=True)
     auto_open_review_on_assemble: bool = Field(default=True)
     send_email_on_ready: bool = Field(default=True)

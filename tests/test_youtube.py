@@ -114,3 +114,29 @@ def test_youtube_upload_respects_privacy_and_synthetic_media_flags(ready_package
     assert record.privacy_status == "unlisted"
     assert record.response_json["containsSyntheticMedia"] is True
     assert storage.load_package(run_id).status == "uploaded"
+
+
+def test_cleanup_intermediate_scene_clips_after_publish(ready_package):
+    """After end-to-end YouTube publish, intermediate scene_xx.mp4 clips are purged while final Short & captions stay."""
+    run_id = ready_package.run_id
+    export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    final_dir = settings.FINAL_OUTPUT_DIR / run_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 6):
+        (export_dir / f"scene_0{i}.mp4").write_bytes(b"SCENE_CLIP_BYTES" * 200)
+    (export_dir / "FLOW_PROMPTS.txt").write_text("Brief", encoding="utf-8")
+    (export_dir / "voiceover.mp3").write_bytes(b"AUDIO" * 100)
+    (final_dir / "captions.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
+    (final_dir / "final_short.sha256").write_text("abc123", encoding="utf-8")
+
+    record = upload_video_to_youtube(run_id, force_mock=True)
+    assert record.youtube_video_id.startswith("mock_yt_")
+
+    # Intermediate scene_xx.mp4 clips must be deleted
+    assert list(export_dir.glob("scene_*.mp4")) == []
+    # Final Short, captions, sha256, prompt brief, and package JSON must remain
+    assert (final_dir / "final_short.mp4").exists()
+    assert (final_dir / "captions.srt").exists()
+    assert (final_dir / "final_short.sha256").exists()
+    assert (export_dir / "FLOW_PROMPTS.txt").exists()
+    assert (settings.PACKAGES_DIR / f"{run_id}.json").exists()

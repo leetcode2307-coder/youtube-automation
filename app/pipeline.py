@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from app.config import settings
+from app.config import normalize_language, settings
 from app.graph import content_graph
 from app.logging_config import logger
 from app.models import ProductionPackage, SlotType
@@ -33,13 +33,18 @@ def run_content_pipeline(
     force_mock: bool = False,
     custom_topic: Optional[str] = None,
     niche_override: Optional[str] = None,
+    language_override: Optional[str] = None,
 ) -> ProductionPackage:
     """Execute the LangGraph content generation pipeline for a specific slot."""
     settings.ensure_directories()
     studio_cfg = storage.get_studio_config()
     run_id, created_at_utc, scheduled_at_local = generate_run_id(slot, studio_cfg.timezone)
     active_niche = (niche_override or "").strip() or studio_cfg.niche
-    logger.info("Starting content generation pipeline: Run ID=%s, Slot=%s, Niche=%s", run_id, slot, active_niche)
+    active_language = normalize_language(language_override or studio_cfg.language)
+    logger.info(
+        "Starting content generation pipeline: Run ID=%s, Slot=%s, Niche=%s, Language=%s",
+        run_id, slot, active_niche, active_language,
+    )
 
     # 1. Fetch recent topics from history to prevent duplication
     history = storage.get_topic_history()
@@ -52,6 +57,7 @@ def run_content_pipeline(
         "scheduled_at_local": scheduled_at_local,
         "recent_topics": recent_topics,
         "niche": active_niche,
+        "language": active_language,
         "niche_domains": studio_cfg.niche_domains,
         "audience_tone": studio_cfg.audience_tone,
         "default_cta": studio_cfg.default_cta,
