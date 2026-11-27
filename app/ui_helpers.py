@@ -221,7 +221,23 @@ def get_system_health(studio_cfg: StudioConfig, active_scheduler: Any = None) ->
     else:
         yt_state, yt_tone, yt_detail = "Dry-run mode", "info", "No YouTube credentials configured; approvals simulate uploads safely."
 
+    from app.flow_playwright import get_flow_session_info
+
+    flow_info = get_flow_session_info(studio_cfg.google_pro_email)
+    flow_email = flow_info.get("email") or "Not configured"
+    flow_ready = bool(flow_info.get("has_session"))
+
     return [
+        {
+            "name": "Google Flow Playwright Bot",
+            "status": "Session Ready" if flow_ready else "Session Needed",
+            "tone": "success" if flow_ready else "amber",
+            "detail": (
+                f"Account: {flow_email} ({flow_info.get('cookie_count', 0)} cookies synced)."
+                if flow_ready
+                else f"Account: {flow_email}. Upload storage_state.json or run 'python -m app.flow_login --email {flow_email}'."
+            ),
+        },
         {
             "name": "AI Script Writer (Groq)",
             "status": "Connected" if groq_ok else "Mock Mode",

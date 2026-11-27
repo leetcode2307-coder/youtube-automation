@@ -2,17 +2,17 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import html as html_lib
+import json
 import os
 import re
 import secrets
 import sys
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import List, Optional
-import zipfile
+from pathlib import Path
+from typing import Callable, List, Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -20,7 +20,14 @@ from pydantic import BaseModel, Field
 from app.assemble import assemble_video
 from app.config import LANGUAGE_PROFILES, normalize_language, settings
 from app.emailer import create_approval_record, send_approval_email
-from app.intake import extract_scene_number
+from app.flow_playwright import (
+    delete_flow_session,
+    get_flow_session_info,
+    normalize_google_email,
+    save_flow_session_state,
+    start_background_flow_automation,
+)
+from app.intake import extract_and_normalize_flow_archive, extract_scene_number
 from app.logging_config import logger
 from app.models import ApprovalRecord, LanguageType, PrivacyStatus, SlotType, StudioConfig
 from app.pipeline import run_content_pipeline
@@ -39,7 +46,16 @@ from app.ui_helpers import (
 
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,80}$")
 _ACTIVE_SCHEDULER = None
+_MODAL_COMMIT_HOOK: Optional[Callable[[], None]] = None
 _APP_DIR = Path(__file__).resolve().parent
+
+
+def _trigger_modal_commit() -> None:
+    if _MODAL_COMMIT_HOOK is not None:
+        try:
+            _MODAL_COMMIT_HOOK()
+        except Exception as exc:
+            logger.warning("Modal background volume commit warning: %s", exc)
 
 
 def _compute_static_asset_version() -> str:
@@ -270,6 +286,7 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             counts["failed"] += 1
 
         lang_key = normalize_language(p.language)
+        flow_job = storage.load_flow_job(p.run_id)
         item = {
             "pkg": p,
             "niche": p.niche or studio_cfg.niche,
@@ -287,14 +304,18 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             "video_exists": video_exists,
             "is_published": is_published,
             "filter_groups": ",".join(groups),
+            "flow_job": flow_job.model_dump() if flow_job else None,
         }
         run_items.append(item)
 
         if p.status in ("awaiting_approval", "awaiting_flow_export", "failed", "approved"):
             attention_runs.append(item)
 
+    flow_session = get_flow_session_info(studio_cfg.google_pro_email)
+
     return {
         "studio_cfg": studio_cfg,
+        "flow_session": flow_session,
         "run_items": run_items,
         "attention_runs": attention_runs,
         "ledger_rows": ledger_rows,
@@ -398,6 +419,8 @@ class GenerateRequestPayload(BaseModel):
     style_examples: Optional[str] = Field(default=None, max_length=3000)
     remember_style: bool = False
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.5)
+    auto_run_flow: Optional[bool] = None
+    google_pro_email: Optional[str] = Field(default=None, max_length=160)
 
 
 @app.post("/api/generate")
@@ -410,6 +433,7 @@ def api_generate_run(
     style_examples: Optional[str] = Query(None),
     remember_style: bool = Query(False),
     temperature: Optional[float] = Query(None, ge=0.0, le=1.5),
+    auto_run_flow: bool = Query(False),
     payload: Optional[GenerateRequestPayload] = Body(default=None),
 ):
     """Trigger content pipeline via UI with optional niche/topic/language/style-memory override."""
@@ -421,6 +445,12 @@ def api_generate_run(
     eff_style = payload.style_examples if payload and payload.style_examples is not None else style_examples
     eff_remember = payload.remember_style if payload else remember_style
     eff_temp = payload.temperature if payload and payload.temperature is not None else temperature
+    eff_auto_flow = (
+        payload.auto_run_flow
+        if payload and payload.auto_run_flow is not None
+        else auto_run_flow
+    )
+    eff_email = payload.google_pro_email if payload and payload.google_pro_email is not None else None
     try:
         pkg = run_content_pipeline(
             slot=eff_slot,
@@ -432,6 +462,14 @@ def api_generate_run(
             remember_style=eff_remember,
             temperature_override=eff_temp,
         )
+        flow_job_status = None
+        if eff_auto_flow:
+            job = start_background_flow_automation(
+                pkg.run_id,
+                google_pro_email=eff_email,
+                on_complete_sync=_trigger_modal_commit,
+            )
+            flow_job_status = job.status
         return {
             "status": "success",
             "run_id": pkg.run_id,
@@ -441,6 +479,7 @@ def api_generate_run(
             "title": pkg.metadata.title,
             "duration": pkg.total_duration_seconds,
             "style_examples_used": bool(pkg.style_examples_used),
+            "flow_job_status": flow_job_status,
         }
     except Exception as e:
         logger.error("UI generation failed: %s", e)
@@ -461,97 +500,6 @@ def api_trigger_scheduled(slot: SlotType):
     except Exception as e:
         logger.error("Scheduled endpoint generation failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def _natural_sort_key(text: str) -> list:
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
-
-
-def _extract_clips_from_zip(zip_path: Path, run_export_dir: Path) -> List[str]:
-    """Safely extract valid .mp4 scene clips and optional voiceover.mp3 from a Google Flow ZIP."""
-    if not zipfile.is_zipfile(zip_path):
-        raise HTTPException(status_code=400, detail=f"Uploaded ZIP '{zip_path.name}' is corrupted or not a valid ZIP archive.")
-
-    max_members = 50
-    max_single_bytes = 250 * 1024 * 1024
-    max_total_bytes = 600 * 1024 * 1024
-    extracted_names: List[str] = []
-    total_extracted = 0
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        valid_infos = []
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            posix_path = PurePosixPath(info.filename.replace("\\", "/"))
-            if "__MACOSX" in posix_path.parts:
-                continue
-            base = posix_path.name
-            if not base or base.startswith("."):
-                continue
-            lower_base = base.lower()
-            if not (lower_base.endswith(".mp4") or lower_base == "voiceover.mp3"):
-                continue
-            if info.file_size < 1024:
-                continue
-            if info.file_size > max_single_bytes:
-                raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeds 250 MB safety limit.")
-            valid_infos.append((info, base, lower_base))
-
-        if not valid_infos:
-            raise HTTPException(
-                status_code=400,
-                detail="ZIP archive contains no valid .mp4 clips (>= 1 KB) or voiceover.mp3.",
-            )
-        if len(valid_infos) > max_members:
-            raise HTTPException(status_code=400, detail=f"ZIP archive contains too many media files ({len(valid_infos)} > {max_members}).")
-
-        vo_infos = [item for item in valid_infos if item[2] == "voiceover.mp3"]
-        mp4_infos = sorted([item for item in valid_infos if item[2].endswith(".mp4")], key=lambda item: _natural_sort_key(item[1]))
-        explicit_nums = {extract_scene_number(base) for _, base, _ in mp4_infos if extract_scene_number(base) > 0}
-        next_auto_idx = 1
-
-        for info, base, lower_base in [*vo_infos, *mp4_infos]:
-            total_extracted += info.file_size
-            if total_extracted > max_total_bytes:
-                raise HTTPException(status_code=400, detail="ZIP archive uncompressed size exceeds 600 MB limit.")
-
-            if lower_base == "voiceover.mp3":
-                dest_name = "voiceover.mp3"
-            else:
-                scene_num = extract_scene_number(base)
-                if scene_num > 0:
-                    dest_name = f"scene_{scene_num:02d}.mp4"
-                else:
-                    while next_auto_idx in explicit_nums:
-                        next_auto_idx += 1
-                    dest_name = f"scene_{next_auto_idx:02d}.mp4"
-                    explicit_nums.add(next_auto_idx)
-                    next_auto_idx += 1
-
-            dest_path = run_export_dir / dest_name
-            tmp_entry = run_export_dir / f".zip.{dest_name}.part.{secrets.token_hex(4)}"
-            try:
-                with zf.open(info, "r") as src, open(tmp_entry, "wb") as dst:
-                    bytes_copied = 0
-                    while True:
-                        chunk = src.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        bytes_copied += len(chunk)
-                        if bytes_copied > max_single_bytes:
-                            raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeded maximum allowed size.")
-                        dst.write(chunk)
-                os.replace(tmp_entry, dest_path)
-                if dest_name == "voiceover.mp3":
-                    (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
-                    (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
-                extracted_names.append(dest_name)
-            finally:
-                if tmp_entry.exists():
-                    tmp_entry.unlink(missing_ok=True)
-
-    return sorted(extracted_names)
 
 
 @app.post("/api/upload-clips/{run_id}")
@@ -605,7 +553,14 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
             if is_zip:
                 if total_bytes < 22:
                     raise HTTPException(status_code=400, detail=f"ZIP file '{raw_name}' is empty or invalid.")
-                extracted = _extract_clips_from_zip(tmp_path, run_export_dir)
+                try:
+                    extracted = extract_and_normalize_flow_archive(
+                        tmp_path,
+                        run_export_dir,
+                        expected_scene_count=len(pkg.scenes),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 uploaded.extend(extracted)
             else:
                 if total_bytes < 1024:
@@ -634,6 +589,128 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
         "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
         "found_scenes": sorted(found_numbers),
         "missing_scenes": missing_scenes,
+    }
+
+
+# =====================================================================
+# Google Flow Playwright Session & Automation APIs
+# =====================================================================
+
+class FlowSessionUploadPayload(BaseModel):
+    email: str = Field(min_length=3, max_length=160)
+    storage_state: dict
+
+
+class FlowAutomatePayload(BaseModel):
+    google_pro_email: Optional[str] = Field(default=None, max_length=160)
+    flow_url: Optional[str] = Field(default=None, max_length=300)
+    auto_assemble: Optional[bool] = None
+
+
+@app.get("/api/flow-session")
+def api_get_flow_session(email: Optional[str] = Query(None)):
+    """Check whether a Playwright browser session is saved for the Google Pro email (secret-free)."""
+    resolved = normalize_google_email(email)
+    return get_flow_session_info(resolved)
+
+
+@app.post("/api/flow-session/upload")
+async def api_upload_flow_session(
+    request: Request,
+    email: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+):
+    """Save Playwright storage_state.json for a Google Pro account via multipart upload or JSON body."""
+    resolved_email = email
+    state_obj = None
+
+    if file is not None:
+        raw_bytes = await file.read()
+        await file.close()
+        if len(raw_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Session JSON exceeds 5 MB limit.")
+        try:
+            state_obj = json.loads(raw_bytes.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON in uploaded session file: {exc}") from exc
+    else:
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Provide multipart file or JSON payload with storage_state.") from exc
+        parsed = FlowSessionUploadPayload.model_validate(body)
+        resolved_email = parsed.email
+        state_obj = parsed.storage_state
+
+    try:
+        info = save_flow_session_state(normalize_google_email(resolved_email), state_obj)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", **info}
+
+
+@app.delete("/api/flow-session")
+def api_delete_flow_session(email: Optional[str] = Query(None)):
+    """Remove saved Playwright session for a Google Pro account."""
+    resolved = normalize_google_email(email)
+    removed = delete_flow_session(resolved)
+    return {"status": "success", "email": resolved, "removed": removed}
+
+
+@app.post("/api/flow-automate/{run_id}")
+def api_start_flow_automate(
+    run_id: str,
+    google_pro_email: Optional[str] = Query(None),
+    flow_url: Optional[str] = Query(None),
+    auto_assemble: Optional[bool] = Query(None),
+    payload: Optional[FlowAutomatePayload] = Body(default=None),
+):
+    """Queue asynchronous Playwright automation to submit prompts to Google Flow and import clips."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    eff_email = payload.google_pro_email if payload and payload.google_pro_email is not None else google_pro_email
+    eff_url = payload.flow_url if payload and payload.flow_url is not None else flow_url
+    eff_assemble = payload.auto_assemble if payload and payload.auto_assemble is not None else auto_assemble
+
+    job = start_background_flow_automation(
+        run_id,
+        google_pro_email=eff_email,
+        flow_url=eff_url,
+        auto_assemble=eff_assemble,
+        on_complete_sync=_trigger_modal_commit,
+    )
+    return JSONResponse(status_code=202, content=job.model_dump())
+
+
+@app.get("/api/flow-automate/{run_id}")
+def api_get_flow_automate_status(run_id: str):
+    """Return live progress for a Google Flow Playwright automation job along with clip readiness."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    job = storage.load_flow_job(run_id)
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    mp4_files = (
+        sorted(f.name for f in run_export_dir.glob("*.mp4") if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024)
+        if run_export_dir.exists()
+        else []
+    )
+    found_numbers = {extract_scene_number(f) for f in mp4_files}
+    missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
+    video_exists = (settings.FINAL_OUTPUT_DIR / run_id / "final_short.mp4").exists()
+
+    return {
+        "job": job.model_dump() if job else {"run_id": run_id, "status": "idle", "progress_percent": 0, "message": ""},
+        "clips": mp4_files,
+        "missing_scenes": missing_scenes,
+        "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
+        "package_status": pkg.status,
+        "video_exists": video_exists,
     }
 
 

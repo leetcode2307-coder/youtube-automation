@@ -209,6 +209,19 @@
                 </div>
               </div>
             </details>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; padding-top:12px; border-top:1px solid var(--color-border);">
+              <label class="checkbox-row" style="margin:0; flex:1; padding:8px 10px;">
+                <input type="checkbox" id="quickAutoFlow" {{ 'checked' if (studio_cfg.flow_auto_automate and flow_session.has_session) else '' }}>
+                <span style="font-size:12.5px;">
+                  <b>Auto-Send Scenes to Google Flow (Playwright):</b>
+                  Submit scene prompts sequentially to <span class="mono">{{ studio_cfg.google_pro_email or 'No email set' }}</span>, download ZIP, extract &amp; rename to <span class="mono">scene_01..0N.mp4</span>.
+                </span>
+              </label>
+              <span class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
+                {{ 'Flow Session Ready' if flow_session.has_session else 'Link Session in Settings' }}
+              </span>
+            </div>
           </div>
 
           <!-- Compact 4-Step End-to-End Guide -->
@@ -496,6 +509,34 @@
                     {% else %}
                     <span class="clip-chip" data-vo="clip">Audio: Uploaded Clip Audio</span>
                     {% endif %}
+                  </div>
+
+                  <!-- Playwright Google Flow Automation Control -->
+                  <div class="flow-bot-box" data-flow-run="{{ p.run_id }}" data-flow-status="{{ item.flow_job.status if item.flow_job else 'idle' }}">
+                    <div class="flow-bot-head">
+                      <strong style="font-size:12.5px; color:var(--status-info-fg);">Automate in Google Flow (Playwright)</strong>
+                      <span class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
+                        {{ 'Session Ready' if flow_session.has_session else 'Session Needed' }}
+                      </span>
+                    </div>
+                    <div class="flow-bot-controls">
+                      <input type="email" id="flow-email-{{ p.run_id }}" class="input mono"
+                             value="{{ studio_cfg.google_pro_email }}"
+                             placeholder="Google Pro account email"
+                             aria-label="Google Pro email for {{ p.run_id }}">
+                      <button type="button" class="btn btn-primary btn-sm" id="flow-btn-{{ p.run_id }}" onclick="runFlowAutomation('{{ p.run_id }}', this)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        Send Scenes to Google Flow
+                      </button>
+                    </div>
+                    <div class="progress-banner" id="flow-job-{{ p.run_id }}"
+                         style="margin-top:8px; margin-bottom:0; {{ '' if item.flow_job and item.flow_job.status != 'idle' else 'display:none;' }}"
+                         aria-live="polite">
+                      {% if item.flow_job and item.flow_job.status != 'idle' %}
+                      <div>{{ item.flow_job.message }}</div>
+                      <div class="progress-track"><div class="progress-fill" style="width:{{ item.flow_job.progress_percent }}%;"></div></div>
+                      {% endif %}
+                    </div>
                   </div>
 
                   <!-- Hidden File Inputs Kept Outside Dropzone (prevents click bubbling bugs) -->
@@ -899,7 +940,40 @@
                   <span class="field-hint">Used as optional inspiration whenever you generate new Shorts (can also be overridden or cleared per Short in Overview).</span>
                 </div>
 
-                <div class="settings-group-title">3. Video, Voiceover &amp; YouTube Defaults</div>
+                <div class="settings-group-title">3. Google Pro Account &amp; Playwright Flow Automation</div>
+                <div class="field">
+                  <label for="cfg-google_pro_email">Google Pro Subscription Email</label>
+                  <input id="cfg-google_pro_email" class="input mono" type="email" value="{{ studio_cfg.google_pro_email }}" placeholder="hanumamaruthichenji@gmail.com">
+                  <span class="field-hint">Target Google Flow Pro account used when sending scenes via Playwright.</span>
+                </div>
+                <div class="field">
+                  <label>Google Flow Browser Session (`storage_state.json`)</label>
+                  <div class="flow-session-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                      <span id="flowSessionStatusBadge" class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
+                        {{ 'Session Ready (' ~ flow_session.cookie_count ~ ' cookies)' if flow_session.has_session else 'Session Missing — Link Account' }}
+                      </span>
+                      <span class="mono" style="color:var(--color-muted-foreground);">{{ flow_session.email or studio_cfg.google_pro_email }}</span>
+                    </div>
+                    <input type="file" id="flowSessionFileInput" accept=".json,application/json" style="display:none;" onchange="uploadFlowSessionFile(this)">
+                    <div class="btn-group">
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('flowSessionFileInput').click()">Upload storage_state.json</button>
+                      <button type="button" class="btn btn-danger-outline btn-sm" onclick="clearFlowSession()">Clear Session</button>
+                    </div>
+                    <div class="field-hint">
+                      Sign in locally once to save &amp; upload your Google Pro session safely:
+                      <code class="mono">python -m app.flow_login --email {{ studio_cfg.google_pro_email }}</code>
+                    </div>
+                  </div>
+                </div>
+                <div class="field full">
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="cfg-flow_auto_automate" {{ 'checked' if studio_cfg.flow_auto_automate else '' }}>
+                    <span><b>Default Auto-Run Google Flow Playwright:</b> Pre-check automated scene submission when creating new Shorts (requires linked Flow session).</span>
+                  </label>
+                </div>
+
+                <div class="settings-group-title">4. Video, Voiceover &amp; YouTube Defaults</div>
                 <div class="field">
                   <label for="cfg-category_id">YouTube Category</label>
                   <select id="cfg-category_id" class="select">
@@ -944,7 +1018,7 @@
                   </select>
                 </div>
 
-                <div class="settings-group-title">4. Schedule &amp; Automation Behavior</div>
+                <div class="settings-group-title">5. Schedule &amp; Automation Behavior</div>
                 <div class="field">
                   <label for="cfg-timezone">Schedule Timezone</label>
                   <input id="cfg-timezone" class="input" type="text" value="{{ studio_cfg.timezone }}">

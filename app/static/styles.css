@@ -631,6 +631,10 @@ button, input, select, textarea {
 }
 
 /* Quick Create Bar & Workflow Strip */
+.card-header > div:first-child {
+  flex: 1 1 300px;
+}
+
 .create-panel {
   background: var(--color-card);
   border: 1px solid var(--color-border);
@@ -642,10 +646,50 @@ button, input, select, textarea {
 
 .create-grid {
   display: grid;
-  grid-template-columns: 1fr 0.85fr 1.25fr auto;
+  grid-template-columns: 1.15fr 1.05fr 1.25fr auto;
   gap: 14px;
   align-items: end;
   margin-top: 14px;
+}
+
+.flow-bot-box {
+  border: 1px solid var(--status-info-bd);
+  border-radius: var(--radius-md);
+  background: var(--status-info-bg);
+  padding: 11px 12px;
+  margin-bottom: 10px;
+}
+
+.flow-bot-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.flow-bot-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.flow-bot-controls .input {
+  flex: 1 1 190px;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.flow-session-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-subtle);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .workflow-strip {

@@ -174,6 +174,7 @@ async function generateShort(slot, btnEl) {
   const topicInput = document.getElementById("quickTopic");
   const styleInput = document.getElementById("quickStyleExamples");
   const rememberCheck = document.getElementById("quickRememberStyle");
+  const autoFlowCheck = document.getElementById("quickAutoFlow");
 
   const payload = {
     slot,
@@ -182,6 +183,7 @@ async function generateShort(slot, btnEl) {
     topic: topicInput ? topicInput.value.trim() || null : null,
     style_examples: styleInput ? styleInput.value.trim() : null,
     remember_style: Boolean(rememberCheck && rememberCheck.checked),
+    auto_run_flow: Boolean(autoFlowCheck && autoFlowCheck.checked),
   };
 
   setBtnBusy(btnEl, true, "Creating script...");
@@ -194,7 +196,8 @@ async function generateShort(slot, btnEl) {
     });
     const data = await res.json();
     if (res.ok) {
-      showToast("Created new video brief: " + data.title, "success");
+      const flowNote = data.flow_job_status ? " + queued Google Flow Playwright bot!" : "";
+      showToast("Created new video brief: " + data.title + flowNote, "success");
       setTimeout(() => {
         window.location.hash = "#videos";
         window.location.reload();
@@ -739,6 +742,8 @@ async function saveAllSettings(ev, fromScheduleForm = false) {
     groq_model: document.getElementById("cfg-groq_model").value.trim(),
     llm_temperature: parseFloat(document.getElementById("cfg-llm_temperature")?.value ?? "0.9"),
     prompt_style_examples: document.getElementById("cfg-prompt_style_examples")?.value.trim() || "",
+    google_pro_email: document.getElementById("cfg-google_pro_email")?.value.trim() || "",
+    flow_auto_automate: document.getElementById("cfg-flow_auto_automate")?.checked ?? false,
     tts_voice: document.getElementById("cfg-tts_voice").value.trim(),
     use_ai_voiceover: document.getElementById("cfg-use_ai_voiceover")?.checked ?? true,
     audio_mode: document.getElementById("cfg-audio_mode")?.value || "ai_voiceover",
@@ -790,12 +795,147 @@ async function refreshLogs() {
   }
 }
 
+async function uploadFlowSessionFile(inputEl) {
+  if (!inputEl?.files?.length) return;
+  const file = inputEl.files[0];
+  inputEl.value = "";
+  const email = document.getElementById("cfg-google_pro_email")?.value.trim() || "";
+  if (!email) {
+    showToast("Enter your Google Pro subscription email first.", "error");
+    return;
+  }
+  const formData = new FormData();
+  formData.append("email", email);
+  formData.append("file", file);
+  showToast("Uploading Playwright session for " + email + "...");
+  try {
+    const res = await fetch("/api/flow-session/upload", { method: "POST", body: formData });
+    const data = await res.json();
+    if (res.ok) {
+      const badge = document.getElementById("flowSessionStatusBadge");
+      if (badge) {
+        badge.className = "badge badge-success";
+        badge.textContent = "Session Ready (" + (data.cookie_count || 0) + " cookies)";
+      }
+      showToast("Saved Google Flow session for " + data.email + ".", "success");
+    } else {
+      showToast("Session upload failed: " + (data.detail || "Invalid JSON"), "error");
+    }
+  } catch (err) {
+    showToast("Upload error: " + err, "error");
+  }
+}
+
+async function clearFlowSession() {
+  const email = document.getElementById("cfg-google_pro_email")?.value.trim() || "";
+  try {
+    const res = await fetch("/api/flow-session?email=" + encodeURIComponent(email), { method: "DELETE" });
+    if (res.ok) {
+      const badge = document.getElementById("flowSessionStatusBadge");
+      if (badge) {
+        badge.className = "badge badge-amber";
+        badge.textContent = "Session Missing — Link Account";
+      }
+      showToast("Cleared saved Google Flow session.", "info");
+    }
+  } catch (err) {
+    showToast("Error clearing session: " + err, "error");
+  }
+}
+
+const _flowPollTimers = {};
+
+function pollFlowAutomation(runId) {
+  clearTimeout(_flowPollTimers[runId]);
+  const banner = document.getElementById("flow-job-" + runId);
+  const btn = document.getElementById("flow-btn-" + runId);
+
+  const tick = async () => {
+    try {
+      const res = await fetch("/api/flow-automate/" + encodeURIComponent(runId));
+      const data = await res.json();
+      if (!res.ok) return;
+      const job = data.job || {};
+      const status = job.status || "idle";
+      const pct = typeof job.progress_percent === "number" ? job.progress_percent : 0;
+
+      if (banner && status !== "idle") {
+        const tone = status === "completed" ? "success" : status === "failed" || status === "auth_required" ? "error" : "info";
+        renderUploadProgress(banner, job.message || status, status === "running" || status === "queued" ? pct : null, tone);
+      }
+
+      if (data.clips) {
+        refreshRunClipsUi(runId, { clips: data.clips, has_custom_voiceover: data.has_custom_voiceover });
+      }
+
+      if (status === "queued" || status === "running") {
+        _flowPollTimers[runId] = setTimeout(tick, 1800);
+        return;
+      }
+
+      if (btn) setBtnBusy(btn, false);
+      if (status === "completed") {
+        showToast("Google Flow clips ready & extracted!", "success");
+        setTimeout(() => window.location.reload(), 1000);
+      } else if (status === "auth_required") {
+        showToast("Google Flow login/session needed — upload session in Settings.", "error");
+      } else if (status === "failed") {
+        showToast("Google Flow run failed: " + (job.error || "See details in card"), "error");
+      }
+    } catch (_e) {
+      _flowPollTimers[runId] = setTimeout(tick, 3000);
+    }
+  };
+
+  _flowPollTimers[runId] = setTimeout(tick, 900);
+}
+
+async function runFlowAutomation(runId, btnEl) {
+  const emailInput = document.getElementById("flow-email-" + runId);
+  const email = emailInput ? emailInput.value.trim() : "";
+  const banner = document.getElementById("flow-job-" + runId);
+  setBtnBusy(btnEl, true, "Running Flow Bot...");
+  renderUploadProgress(banner, "Starting Google Flow Playwright automation for " + (email || "configured account") + "...", 5, "info");
+  try {
+    const res = await fetch("/api/flow-automate/" + encodeURIComponent(runId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ google_pro_email: email || null }),
+    });
+    const data = await res.json();
+    if (res.ok || res.status === 202) {
+      showToast("Playwright automation started for " + (data.google_pro_email || runId) + ".", "info");
+      renderUploadProgress(banner, data.message || "Queued...", data.progress_percent || 5, "info");
+      pollFlowAutomation(runId);
+    } else {
+      setBtnBusy(btnEl, false);
+      const msg = data.detail || "Unable to start Google Flow automation";
+      renderUploadProgress(banner, msg, null, "error");
+      showToast(msg, "error");
+    }
+  } catch (err) {
+    setBtnBusy(btnEl, false);
+    const msg = "Network error starting Playwright automation: " + err;
+    renderUploadProgress(banner, msg, null, "error");
+    showToast(msg, "error");
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(getPreferredTheme());
   const initialHash = window.location.hash.replace("#", "");
   if (initialHash && SECTION_TITLES[initialHash]) {
     navigateTo(initialHash, false);
   }
+  document.querySelectorAll("[data-flow-run]").forEach((el) => {
+    const runId = el.getAttribute("data-flow-run");
+    const status = el.getAttribute("data-flow-status");
+    if (runId && (status === "queued" || status === "running")) {
+      const btn = document.getElementById("flow-btn-" + runId);
+      if (btn) setBtnBusy(btn, true, "Running Flow Bot...");
+      pollFlowAutomation(runId);
+    }
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       closeModal();

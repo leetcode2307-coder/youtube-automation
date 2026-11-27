@@ -108,7 +108,15 @@ class Settings(BaseSettings):
     DATA_DIR: Path = Path("data")
     PACKAGES_DIR: Path = Path("data/packages")
     FLOW_EXPORTS_DIR: Path = Path("data/flow_exports")
+    FLOW_SESSIONS_DIR: Path = Path("data/flow_sessions")
+    FLOW_JOBS_DIR: Path = Path("data/flow_jobs")
     FINAL_OUTPUT_DIR: Path = Path("data/final")
+
+    # Google Flow Playwright Automation
+    GOOGLE_PRO_EMAIL: str = "hanumamaruthichenji@gmail.com"
+    GOOGLE_FLOW_URL: str = "https://flow.google"
+    FLOW_AUTOMATION_HEADLESS: bool = True
+    FLOW_SCENE_TIMEOUT_SECONDS: int = 240
     TOPIC_HISTORY_FILE: Path = Path("data/topic_history.json")
     UPLOAD_LEDGER_FILE: Path = Path("data/upload_ledger.json")
     APPROVALS_FILE: Path = Path("data/approvals.json")
@@ -154,6 +162,10 @@ class Settings(BaseSettings):
                 self.PACKAGES_DIR = self.DATA_DIR / "packages"
             if "FLOW_EXPORTS_DIR" not in os.environ and self.FLOW_EXPORTS_DIR == Path("data/flow_exports"):
                 self.FLOW_EXPORTS_DIR = self.DATA_DIR / "flow_exports"
+            if "FLOW_SESSIONS_DIR" not in os.environ and self.FLOW_SESSIONS_DIR == Path("data/flow_sessions"):
+                self.FLOW_SESSIONS_DIR = self.DATA_DIR / "flow_sessions"
+            if "FLOW_JOBS_DIR" not in os.environ and self.FLOW_JOBS_DIR == Path("data/flow_jobs"):
+                self.FLOW_JOBS_DIR = self.DATA_DIR / "flow_jobs"
             if "FINAL_OUTPUT_DIR" not in os.environ and self.FINAL_OUTPUT_DIR == Path("data/final"):
                 self.FINAL_OUTPUT_DIR = self.DATA_DIR / "final"
             if "TOPIC_HISTORY_FILE" not in os.environ and self.TOPIC_HISTORY_FILE == Path("data/topic_history.json"):
@@ -187,6 +199,8 @@ class Settings(BaseSettings):
             self.DATA_DIR,
             self.PACKAGES_DIR,
             self.FLOW_EXPORTS_DIR,
+            self.FLOW_SESSIONS_DIR,
+            self.FLOW_JOBS_DIR,
             self.FINAL_OUTPUT_DIR,
             self.LOGS_DIR,
         ]:

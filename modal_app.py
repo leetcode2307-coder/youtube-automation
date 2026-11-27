@@ -20,6 +20,10 @@ image = (
         "PYTHONPATH": "/app",
     })
     .pip_install_from_requirements("requirements.txt")
+    .run_commands(
+        "playwright install-deps chromium",
+        "playwright install chromium",
+    )
     .workdir("/app")
     .add_local_dir(
         "app",
@@ -109,9 +113,9 @@ class _ModalVolumeSyncMiddleware:
     volumes={"/data": volume},
     secrets=[app_secret],
     cpu=2.0,
-    memory=2048,
+    memory=4096,
     max_containers=1,
-    timeout=600,
+    timeout=900,
     routing_region="ap-south",
 )
 @modal.concurrent(max_inputs=50)
@@ -121,8 +125,11 @@ def web():
     os.environ.setdefault("DATA_DIR", "/data")
     os.environ.setdefault("ENABLE_EMBEDDED_SCHEDULER", "false")
 
+    import app.server as server_module
     from app.server import app as fastapi_app
     from app.storage import storage
+
+    server_module._MODAL_COMMIT_HOOK = _safe_commit
 
     # Reload persistent volume first, then ensure default studio_settings.json exists and commit
     _safe_reload()
