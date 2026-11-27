@@ -488,3 +488,149 @@ def test_playwright_google_flow_end_to_end_system(isolated_env, tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_flow_login_chrome_channel_persistent_profile_and_errors(isolated_env, monkeypatch):
+    """Verify app/flow_login.py enforces channel='chrome', persistent profile, visible UI, timeout, and --push-url."""
+    import playwright.sync_api as pw_sync
+    from app import flow_login
+
+    email = "hanumamaruthichenji@gmail.com"
+    launch_calls = []
+
+    class FakeLocator:
+        def __init__(self, count_val=0, visible=False):
+            self._count = count_val
+            self._visible = visible
+            self.first = self
+
+        def count(self):
+            return self._count
+
+        def is_visible(self, timeout=0):
+            return self._visible
+
+        def click(self):
+            return None
+
+        def inner_text(self, timeout=0):
+            return "Couldn't sign you in This browser or app may not be secure."
+
+    class FakePage:
+        def __init__(self, scenario: str):
+            self.scenario = scenario
+            self.url = "https://accounts.google.com/v3/signin/rejected" if scenario == "rejected" else "https://flow.google.com/"
+            self._polls = 0
+            self._closed = False
+
+        def is_closed(self):
+            return self._closed
+
+        def goto(self, url, wait_until="domcontentloaded", timeout=45000):
+            self.goto_url = url
+
+        def wait_for_timeout(self, ms):
+            self._polls += 1
+            if self.scenario == "window_closed" and self._polls >= 2:
+                self._closed = True
+
+        def get_by_text(self, text, exact=False):
+            return FakeLocator(count_val=0, visible=False)
+
+        def locator(self, sel):
+            if self.scenario == "success" and sel != "body":
+                return FakeLocator(count_val=1, visible=True)
+            if self.scenario == "rejected" and sel == "body":
+                return FakeLocator(count_val=1, visible=True)
+            return FakeLocator(count_val=0, visible=False)
+
+    class FakeContext:
+        def __init__(self, scenario: str):
+            self.scenario = scenario
+            self.pages = [FakePage(scenario)]
+            self.closed = False
+
+        def new_page(self):
+            return self.pages[0]
+
+        def cookies(self):
+            if self.scenario == "success":
+                return [{"name": "SID", "value": "TEST_SID", "domain": ".google.com", "path": "/"}]
+            return []
+
+        def storage_state(self):
+            return {
+                "cookies": [{"name": "SID", "value": "TEST_SID", "domain": ".google.com", "path": "/"}],
+                "origins": [],
+            }
+
+        def close(self):
+            self.closed = True
+
+    def _make_fake_playwright(scenario: str):
+        class FakeChromium:
+            def launch_persistent_context(self, **kwargs):
+                launch_calls.append(kwargs)
+                if scenario == "missing_chrome":
+                    raise RuntimeError("Executable doesn't exist for channel chrome")
+                return FakeContext(scenario)
+
+        class FakePWManager:
+            def __enter__(self):
+                return type("PW", (), {"chromium": FakeChromium()})()
+
+            def __exit__(self, *args):
+                return False
+
+        return FakePWManager
+
+    # 1. Success flow + --push-url + persistent profile + zero bypass/stealth args
+    pushed_requests = []
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"status":"success"}'
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=30: pushed_requests.append((req.full_url, json.loads(req.data.decode()))) or FakeResp(),
+    )
+    monkeypatch.setattr(pw_sync, "sync_playwright", _make_fake_playwright("success"))
+
+    saved_path = flow_login.capture_flow_session_interactive(
+        email,
+        push_url="https://example.modal.run",
+        timeout_seconds=5,
+    )
+    assert saved_path.exists()
+    assert len(launch_calls) == 1
+    call_kwargs = launch_calls[0]
+    assert call_kwargs["channel"] == "chrome"
+    assert call_kwargs["headless"] is False
+    assert "args" not in call_kwargs
+    assert Path(call_kwargs["user_data_dir"]) == flow_login.get_persistent_profile_dir(email)
+    assert pushed_requests[0][0] == "https://example.modal.run/api/flow-session/upload"
+    assert pushed_requests[0][1]["email"] == email
+    assert fp.get_flow_session_info(email)["has_auth_cookie"] is True
+
+    # 2. Rejected login timeout gives clear security-rejection diagnostic
+    monkeypatch.setattr(pw_sync, "sync_playwright", _make_fake_playwright("rejected"))
+    with pytest.raises(TimeoutError, match="This browser or app may not be secure"):
+        flow_login.capture_flow_session_interactive(email, timeout_seconds=1)
+
+    # 3. Missing Chrome error gives clear installation guidance
+    monkeypatch.setattr(pw_sync, "sync_playwright", _make_fake_playwright("missing_chrome"))
+    with pytest.raises(RuntimeError, match="Failed to launch installed Google Chrome"):
+        flow_login.capture_flow_session_interactive(email, timeout_seconds=5)
+
+    # 4. Invalid timeout validation
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        flow_login.capture_flow_session_interactive(email, timeout_seconds=0)
