@@ -1,3 +1,4 @@
+import inspect
 import json
 import re
 from typing import Any, Optional, Tuple, Type, TypeVar
@@ -133,6 +134,7 @@ def get_llm(
     force_mock: bool = False,
     model_name: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
 ):
     """Factory to retrieve Groq LLM or MockLLM if API key is unconfigured."""
     if force_mock or not settings.GROQ_API_KEY or "your_groq_api_key" in settings.GROQ_API_KEY:
@@ -141,11 +143,13 @@ def get_llm(
 
     selected_model = (model_name or settings.GROQ_MODEL).strip() or settings.GROQ_MODEL
     resolved_max_tokens = _resolve_max_tokens(selected_model, requested_max_tokens=max_tokens)
+    resolved_temp = settings.GROQ_TEMPERATURE if temperature is None else float(temperature)
+    resolved_temp = max(0.0, min(1.5, resolved_temp))
     try:
         llm = ChatGroq(
             model=selected_model,
             api_key=settings.GROQ_API_KEY,
-            temperature=0.7,
+            temperature=resolved_temp,
             max_tokens=resolved_max_tokens,
             max_retries=settings.MAX_RETRIES,
         )
@@ -153,6 +157,28 @@ def get_llm(
     except Exception as e:
         logger.warning("Failed to initialize ChatGroq (%s), falling back to MockLLM: %s", selected_model, e)
         return MockLLM()
+
+
+def _invoke_get_llm(
+    force_mock: bool,
+    model_name: str,
+    max_tokens: Optional[int],
+    temperature: Optional[float],
+):
+    """Invoke get_llm while preserving compatibility with test stubs lacking newer kwargs."""
+    kwargs: dict[str, Any] = {
+        "force_mock": force_mock,
+        "model_name": model_name,
+        "max_tokens": max_tokens,
+    }
+    if temperature is not None:
+        try:
+            params = inspect.signature(get_llm).parameters
+            if "temperature" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                kwargs["temperature"] = temperature
+        except (TypeError, ValueError):
+            pass
+    return get_llm(**kwargs)
 
 
 def _extract_json_payload(raw_text: str) -> Any:
@@ -223,6 +249,7 @@ def invoke_structured_output(
     force_mock: bool = False,
     model_name: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
 ) -> T:
     """
     Invoke LLM with structured Pydantic output, handling Groq tool_use_failed (400),
@@ -242,7 +269,12 @@ def invoke_structured_output(
     errors: list[str] = []
 
     for idx, candidate in enumerate(candidate_models):
-        llm = get_llm(force_mock=force_mock, model_name=candidate, max_tokens=max_tokens)
+        llm = _invoke_get_llm(
+            force_mock=force_mock,
+            model_name=candidate,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         if isinstance(llm, MockLLM):
             return llm.with_structured_output(schema).invoke(prompt)
 

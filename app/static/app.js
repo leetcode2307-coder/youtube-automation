@@ -28,9 +28,54 @@ function toggleTheme() {
   applyTheme(current === "dark" ? "light" : "dark");
 }
 
-function copyText(text, label = "Text") {
-  navigator.clipboard.writeText(text || "");
+function copyText(text, label = "Text", triggerBtn = null) {
+  navigator.clipboard?.writeText(text || "");
   showToast(label + " copied to clipboard.", "success");
+  if (triggerBtn) {
+    const prev = triggerBtn.dataset.origLabel || triggerBtn.textContent;
+    triggerBtn.dataset.origLabel = prev;
+    triggerBtn.textContent = "Copied!";
+    clearTimeout(triggerBtn.__copyTimer);
+    triggerBtn.__copyTimer = setTimeout(() => {
+      triggerBtn.textContent = prev;
+    }, 1500);
+  }
+}
+
+const STYLE_MEMORY_PRESETS = {
+  suspense:
+    "Open with an unexpected 2-second paradox or visual contrast hook, moody dramatic rim lighting, slow push-in shot to character reactions, escalating curiosity beat in scene 2, and a crisp twist revelation in the final scene.",
+  warm:
+    "Warm golden-hour storytelling tone, grounded everyday character emotion, gentle pacing, clear relatable moral takeaway without preaching, ending with a heartfelt single-line reflection.",
+  tech:
+    "High-energy visual explainer: hook viewers with a concrete pain point in 2 seconds, kinetic close-up-to-wide transitions, clear visual analogy in middle scenes, and a sharp futuristic payoff frame.",
+};
+
+function applyStylePreset(presetKey) {
+  const box = document.getElementById("quickStyleExamples");
+  if (!box || !STYLE_MEMORY_PRESETS[presetKey]) return;
+  box.value = STYLE_MEMORY_PRESETS[presetKey];
+  box.focus();
+  showToast("Applied '" + presetKey + "' style example (optional).", "info");
+}
+
+function clearQuickStyleMemory() {
+  const box = document.getElementById("quickStyleExamples");
+  if (box) {
+    box.value = "";
+    box.focus();
+  }
+  showToast("Cleared optional style examples for this run.", "info");
+}
+
+function syncTempControl(rawVal) {
+  const parsed = parseFloat(rawVal);
+  if (Number.isNaN(parsed)) return;
+  const clamped = Math.max(0, Math.min(1.5, parsed));
+  const numInput = document.getElementById("cfg-llm_temperature");
+  const rangeInput = document.getElementById("cfg-llm_temperature_range");
+  if (numInput) numInput.value = clamped.toFixed(2);
+  if (rangeInput) rangeInput.value = Math.max(0.2, Math.min(1.3, clamped)).toFixed(2);
 }
 
 const SECTION_TITLES = {
@@ -96,12 +141,30 @@ function filterRuns(filterKey, btnEl) {
 function setBtnBusy(btn, busy, busyLabel) {
   if (!btn) return;
   if (busy) {
-    btn.dataset.origHtml = btn.innerHTML;
+    if (!btn.dataset.origHtml) btn.dataset.origHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = busyLabel;
+    btn.classList.add("is-busy");
+    btn.textContent = "";
+    const svgNS = "http://www.w3.org/2000/svg";
+    const spinner = document.createElementNS(svgNS, "svg");
+    spinner.setAttribute("class", "btn-spinner");
+    spinner.setAttribute("viewBox", "0 0 24 24");
+    spinner.setAttribute("fill", "none");
+    spinner.setAttribute("stroke", "currentColor");
+    spinner.setAttribute("stroke-width", "2.4");
+    spinner.setAttribute("aria-hidden", "true");
+    const arc = document.createElementNS(svgNS, "path");
+    arc.setAttribute("d", "M21 12a9 9 0 1 1-6.219-8.56");
+    spinner.appendChild(arc);
+    btn.appendChild(spinner);
+    btn.appendChild(document.createTextNode(" " + busyLabel));
   } else {
     btn.disabled = false;
-    if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+    btn.classList.remove("is-busy");
+    if (btn.dataset.origHtml) {
+      btn.innerHTML = btn.dataset.origHtml;
+      delete btn.dataset.origHtml;
+    }
   }
 }
 
@@ -109,15 +172,26 @@ async function generateShort(slot, btnEl) {
   const nicheInput = document.getElementById("quickNiche");
   const langSelect = document.getElementById("quickLanguage");
   const topicInput = document.getElementById("quickTopic");
-  const params = new URLSearchParams({ slot });
-  if (nicheInput && nicheInput.value.trim()) params.set("niche", nicheInput.value.trim());
-  if (langSelect && langSelect.value) params.set("language", langSelect.value);
-  if (topicInput && topicInput.value.trim()) params.set("topic", topicInput.value.trim());
+  const styleInput = document.getElementById("quickStyleExamples");
+  const rememberCheck = document.getElementById("quickRememberStyle");
+
+  const payload = {
+    slot,
+    niche: nicheInput ? nicheInput.value.trim() || null : null,
+    language: langSelect ? langSelect.value || null : null,
+    topic: topicInput ? topicInput.value.trim() || null : null,
+    style_examples: styleInput ? styleInput.value.trim() : null,
+    remember_style: Boolean(rememberCheck && rememberCheck.checked),
+  };
 
   setBtnBusy(btnEl, true, "Creating script...");
   showToast("Generating your " + slot + " video script and scene prompts...");
   try {
-    const res = await fetch("/api/generate?" + params.toString(), { method: "POST" });
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const data = await res.json();
     if (res.ok) {
       showToast("Created new video brief: " + data.title, "success");
@@ -135,9 +209,42 @@ async function generateShort(slot, btnEl) {
   }
 }
 
+function openClipPicker(runId) {
+  const input = document.getElementById("clips-input-" + runId);
+  if (input) input.click();
+}
+
+function openVoiceoverPicker(runId) {
+  const input = document.getElementById("vo-input-" + runId);
+  if (input) input.click();
+}
+
+function triggerDropzonePick(ev, runId) {
+  if (ev.target && ev.target.closest("button")) return;
+  openClipPicker(runId);
+}
+
+function handleDragEnter(ev) {
+  ev.preventDefault();
+  const zone = ev.currentTarget;
+  const depth = (parseInt(zone.dataset.dragDepth || "0", 10) || 0) + 1;
+  zone.dataset.dragDepth = String(depth);
+  zone.classList.add("drag-over");
+}
+
+function handleDragLeave(ev) {
+  ev.preventDefault();
+  const zone = ev.currentTarget;
+  const depth = Math.max(0, (parseInt(zone.dataset.dragDepth || "1", 10) || 1) - 1);
+  zone.dataset.dragDepth = String(depth);
+  if (depth === 0) zone.classList.remove("drag-over");
+}
+
 function handleDrop(ev, runId) {
   ev.preventDefault();
-  ev.currentTarget.classList.remove("drag-over");
+  const zone = ev.currentTarget;
+  zone.dataset.dragDepth = "0";
+  zone.classList.remove("drag-over");
   if (ev.dataTransfer && ev.dataTransfer.files.length) {
     uploadFileList(runId, ev.dataTransfer.files);
   }
@@ -150,13 +257,26 @@ function uploadClips(runId, inputEl) {
   }
 }
 
+function uploadVoiceoverFile(runId, inputEl) {
+  if (!inputEl.files || !inputEl.files.length) return;
+  const raw = inputEl.files[0];
+  inputEl.value = "";
+  if (!raw.name.toLowerCase().endsWith(".mp3") || raw.size < 1024) {
+    showToast("Please select a valid .mp3 voiceover file (>= 1 KB).", "error");
+    return;
+  }
+  const renamed = new File([raw], "voiceover.mp3", { type: raw.type || "audio/mpeg" });
+  uploadFileList(runId, [renamed]);
+}
+
 function formatBytesMB(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-function renderUploadProgress(banner, text, percent = null) {
+function renderUploadProgress(banner, text, percent = null, stateTone = "info") {
   if (!banner) return;
   banner.style.display = "block";
+  banner.className = "progress-banner" + (stateTone === "error" ? " is-error" : stateTone === "success" ? " is-success" : "");
   banner.textContent = "";
   const label = document.createElement("div");
   label.textContent = text;
@@ -172,11 +292,80 @@ function renderUploadProgress(banner, text, percent = null) {
   }
 }
 
+function createUploadQueueUI(runId, fileArr) {
+  const container = document.getElementById("upload-queue-" + runId);
+  if (!container) return [];
+  container.style.display = "flex";
+  container.textContent = "";
+  return fileArr.map((file) => {
+    const row = document.createElement("div");
+    row.className = "upload-queue-item";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "mono";
+    nameSpan.textContent = file.name + " (" + formatBytesMB(file.size || 0) + ")";
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = "badge badge-neutral";
+    statusBadge.textContent = "Queued";
+
+    row.appendChild(nameSpan);
+    row.appendChild(statusBadge);
+    container.appendChild(row);
+    return statusBadge;
+  });
+}
+
+function setQueueItemState(badgeEl, text, tone) {
+  if (!badgeEl) return;
+  badgeEl.className = "badge badge-" + (tone || "neutral");
+  badgeEl.textContent = text;
+}
+
+function refreshRunClipsUi(runId, clipsData) {
+  const station = document.getElementById("upload-station-" + runId);
+  const clipList = document.getElementById("clip-list-" + runId);
+  const countEl = document.getElementById("clips-count-" + runId);
+  if (!station || !clipList || !clipsData) return;
+
+  const readySet = new Set(
+    (clipsData.clips || [])
+      .map((name) => {
+        const m = String(name).match(/scene_?0*(\d+)/i);
+        return m ? parseInt(m[1], 10) : 0;
+      })
+      .filter((n) => n > 0)
+  );
+
+  const sceneChips = clipList.querySelectorAll(".clip-chip[data-scene]");
+  sceneChips.forEach((chip) => {
+    const num = parseInt(chip.getAttribute("data-scene") || "0", 10);
+    const isReady = readySet.has(num);
+    chip.classList.toggle("ready", isReady);
+    chip.textContent = chip.textContent.replace(/^(Ready|Missing):\s*/i, isReady ? "Ready: " : "Missing: ");
+  });
+
+  if (countEl) {
+    const totalScenes = parseInt(station.getAttribute("data-total-scenes") || String(sceneChips.length), 10);
+    const readyCount = Array.from(sceneChips).filter((c) => c.classList.contains("ready")).length;
+    countEl.textContent = readyCount + "/" + totalScenes + " ready";
+  }
+
+  if (clipsData.has_custom_voiceover) {
+    const voChip = clipList.querySelector(".clip-chip[data-vo]");
+    if (voChip) {
+      voChip.classList.add("ready");
+      voChip.setAttribute("data-vo", "custom");
+      voChip.textContent = "Ready: voiceover.mp3 (Custom)";
+    }
+  }
+}
+
 function uploadSingleFileXhr(runId, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload-clips/" + encodeURIComponent(runId), true);
-    xhr.timeout = 140000;
+    xhr.timeout = 180000;
 
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && typeof onProgress === "function") {
@@ -213,27 +402,43 @@ async function uploadFileList(runId, files) {
   if (!fileArr.length) return;
 
   const banner = document.getElementById("progress-" + runId);
-  const setProgress = (msg, pct = null) => {
-    renderUploadProgress(banner, msg, pct);
+  const setProgress = (msg, pct = null, tone = "info") => {
+    renderUploadProgress(banner, msg, pct, tone);
   };
 
-  // Client-side preflight validation so invalid files fail instantly without uploading bytes
+  // Client-side preflight validation so invalid files show clear inline feedback without uploading bytes
   for (const f of fileArr) {
     const lower = f.name.toLowerCase();
-    if (!lower.endsWith(".mp4") && lower !== "voiceover.mp3") {
-      showToast("Unsupported file '" + f.name + "'. Upload scene_01.mp4..scene_0N.mp4 or voiceover.mp3.", "error");
+    const isZip = lower.endsWith(".zip");
+    const isMp4 = lower.endsWith(".mp4");
+    const isVo = lower === "voiceover.mp3";
+    if (!isMp4 && !isVo && !isZip) {
+      const msg = "Unsupported file '" + f.name + "'. Upload scene_01.mp4..scene_0N.mp4, a Google Flow .zip export, or voiceover.mp3.";
+      setProgress(msg, null, "error");
+      showToast(msg, "error");
       return;
     }
-    if (lower.endsWith(".mp4") && !/scene_?0*\d+/i.test(f.name)) {
-      showToast("MP4 filename '" + f.name + "' must follow scene_01.mp4 naming convention.", "error");
+    if (isMp4 && !/scene_?0*\d+/i.test(f.name)) {
+      const msg = "MP4 filename '" + f.name + "' must follow scene_01.mp4 naming convention (or upload the Google Flow .zip directly).";
+      setProgress(msg, null, "error");
+      showToast(msg, "error");
       return;
     }
-    if (f.size < 1024) {
-      showToast("File '" + f.name + "' is too small or empty.", "error");
+    if (isZip && f.size < 22) {
+      const msg = "ZIP archive '" + f.name + "' is empty or invalid.";
+      setProgress(msg, null, "error");
+      showToast(msg, "error");
+      return;
+    }
+    if (!isZip && f.size < 1024) {
+      const msg = "File '" + f.name + "' is too small or empty.";
+      setProgress(msg, null, "error");
+      showToast(msg, "error");
       return;
     }
   }
 
+  const queueBadges = createUploadQueueUI(runId, fileArr);
   const totalBytes = fileArr.reduce((sum, f) => sum + (f.size || 0), 0);
   const loadedByFile = new Array(fileArr.length).fill(0);
   let completedCount = 0;
@@ -244,7 +449,7 @@ async function uploadFileList(runId, files) {
     setProgress(
       "Step 1 of 3: Uploading " +
         fileArr.length +
-        " clip(s) — " +
+        " item(s) — " +
         pct +
         "% (" +
         formatBytesMB(loadedTotal) +
@@ -255,15 +460,15 @@ async function uploadFileList(runId, files) {
         "/" +
         fileArr.length +
         " complete",
-      pct
+      pct,
+      "info"
     );
   };
 
   updateUploadUi();
-  showToast("Uploading " + fileArr.length + " clip(s) in parallel...");
+  showToast("Uploading " + fileArr.length + " item(s)...");
 
   try {
-    // Upload up to 3 files concurrently so requests stay small, fast, and under proxy limits
     const concurrency = Math.min(3, fileArr.length);
     let nextIdx = 0;
 
@@ -271,14 +476,27 @@ async function uploadFileList(runId, files) {
       while (nextIdx < fileArr.length) {
         const idx = nextIdx++;
         const file = fileArr[idx];
-        await uploadSingleFileXhr(runId, file, (loaded, total) => {
-          const scaled = total > 0 ? Math.round((loaded / total) * (file.size || total)) : loaded;
-          loadedByFile[idx] = Math.min(file.size || scaled, scaled);
+        const badge = queueBadges[idx];
+        setQueueItemState(badge, "Uploading...", "info");
+        try {
+          const uploadRes = await uploadSingleFileXhr(runId, file, (loaded, total) => {
+            const scaled = total > 0 ? Math.round((loaded / total) * (file.size || total)) : loaded;
+            loadedByFile[idx] = Math.min(file.size || scaled, scaled);
+            const filePct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+            setQueueItemState(badge, file.name.toLowerCase().endsWith(".zip") && filePct >= 100 ? "Extracting ZIP..." : filePct + "%", "info");
+            updateUploadUi();
+          });
+          loadedByFile[idx] = file.size || loadedByFile[idx];
+          completedCount += 1;
+          const countInfo = Array.isArray(uploadRes.uploaded) && file.name.toLowerCase().endsWith(".zip")
+            ? "Extracted " + uploadRes.uploaded.length + " file(s)"
+            : "Uploaded";
+          setQueueItemState(badge, countInfo, "success");
           updateUploadUi();
-        });
-        loadedByFile[idx] = file.size || loadedByFile[idx];
-        completedCount += 1;
-        updateUploadUi();
+        } catch (fileErr) {
+          setQueueItemState(badge, "Error", "danger");
+          throw fileErr;
+        }
       }
     }
 
@@ -287,23 +505,28 @@ async function uploadFileList(runId, files) {
     const clipsRes = await fetch("/api/clips/" + encodeURIComponent(runId));
     const upData = await clipsRes.json();
     if (!clipsRes.ok) {
-      showToast("Upload check failed: " + (upData.detail || "Unable to verify clips"), "error");
+      const msg = "Upload verification failed: " + (upData.detail || "Unable to verify clips");
+      setProgress(msg, null, "error");
+      showToast(msg, "error");
       return;
     }
 
+    refreshRunClipsUi(runId, upData);
+
     if (AUTO_ASSEMBLE && upData.missing_scenes && upData.missing_scenes.length === 0) {
-      setProgress("Step 2 of 3: All clips uploaded. Preparing your 9:16 video and voiceover...", null);
+      setProgress("Step 2 of 3: All clips uploaded. Preparing your 9:16 video and voiceover...", null, "info");
       showToast("All clips uploaded. Assembling video...", "info");
       const asmRes = await fetch("/api/assemble/" + encodeURIComponent(runId), { method: "POST" });
       const asmData = await asmRes.json();
       if (!asmRes.ok) {
-        showToast("Video assembly failed: " + (asmData.detail || "Check scene clips"), "error");
-        setTimeout(() => window.location.reload(), 1600);
+        const msg = "Video assembly failed: " + (asmData.detail || "Check uploaded scene clips");
+        setProgress(msg, null, "error");
+        showToast(msg, "error");
         return;
       }
 
       if (AUTO_OPEN_REVIEW) {
-        setProgress("Step 3 of 3: Video ready! Opening your review screen...", null);
+        setProgress("Step 3 of 3: Video ready! Opening your review screen...", null, "success");
         const notRes = await fetch("/api/notify/" + encodeURIComponent(runId), { method: "POST" });
         const notData = await notRes.json();
         if (notRes.ok && notData.review_url) {
@@ -311,21 +534,21 @@ async function uploadFileList(runId, files) {
           return;
         }
       }
+      setProgress("Video assembled and ready for review!", null, "success");
       showToast("Your video is ready for approval!", "success");
       setTimeout(() => window.location.reload(), 900);
     } else {
-      const missing = (upData.missing_scenes || []).join(", ");
-      showToast(
-        missing
-          ? "Clips uploaded. Still waiting for scene(s): " + missing
-          : "All clips uploaded. Click Assemble Video when ready.",
-        "success"
-      );
-      setTimeout(() => window.location.reload(), 900);
+      const missing = (upData.missing_scenes || []).map((n) => "scene_" + String(n).padStart(2, "0") + ".mp4").join(", ");
+      const msg = missing
+        ? "Uploaded! Still missing: " + missing
+        : "All scene clips ready! Click Assemble Video when ready.";
+      setProgress(msg, null, missing ? "info" : "success");
+      showToast(msg, "success");
     }
   } catch (err) {
-    showToast("Upload failed: " + (err?.message || err), "error");
-    if (banner) banner.style.display = "none";
+    const msg = "Upload failed: " + (err?.message || err) + ". Check filenames and try again.";
+    setProgress(msg, null, "error");
+    showToast(msg, "error");
   }
 }
 
@@ -514,6 +737,8 @@ async function saveAllSettings(ev, fromScheduleForm = false) {
     min_duration_seconds: parseInt(document.getElementById("cfg-min_duration_seconds").value, 10),
     max_duration_seconds: parseInt(document.getElementById("cfg-max_duration_seconds").value, 10),
     groq_model: document.getElementById("cfg-groq_model").value.trim(),
+    llm_temperature: parseFloat(document.getElementById("cfg-llm_temperature")?.value ?? "0.9"),
+    prompt_style_examples: document.getElementById("cfg-prompt_style_examples")?.value.trim() || "",
     tts_voice: document.getElementById("cfg-tts_voice").value.trim(),
     use_ai_voiceover: document.getElementById("cfg-use_ai_voiceover")?.checked ?? true,
     audio_mode: document.getElementById("cfg-audio_mode")?.value || "ai_voiceover",

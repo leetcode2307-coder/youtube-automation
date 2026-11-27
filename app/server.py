@@ -7,10 +7,11 @@ import re
 import secrets
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Optional
+import zipfile
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -388,6 +389,17 @@ def api_delete_package(run_id: str):
     return {"status": "success", "run_id": run_id}
 
 
+class GenerateRequestPayload(BaseModel):
+    slot: SlotType = "morning"
+    mock: bool = False
+    niche: Optional[str] = None
+    topic: Optional[str] = None
+    language: Optional[LanguageType] = None
+    style_examples: Optional[str] = Field(default=None, max_length=3000)
+    remember_style: bool = False
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=1.5)
+
+
 @app.post("/api/generate")
 def api_generate_run(
     slot: SlotType = Query("morning"),
@@ -395,15 +407,30 @@ def api_generate_run(
     niche: Optional[str] = Query(None),
     topic: Optional[str] = Query(None),
     language: Optional[LanguageType] = Query(None),
+    style_examples: Optional[str] = Query(None),
+    remember_style: bool = Query(False),
+    temperature: Optional[float] = Query(None, ge=0.0, le=1.5),
+    payload: Optional[GenerateRequestPayload] = Body(default=None),
 ):
-    """Trigger content pipeline via UI with optional niche/topic/language override."""
+    """Trigger content pipeline via UI with optional niche/topic/language/style-memory override."""
+    eff_slot = payload.slot if payload else slot
+    eff_mock = payload.mock if payload else mock
+    eff_niche = payload.niche if payload and payload.niche is not None else niche
+    eff_topic = payload.topic if payload and payload.topic is not None else topic
+    eff_language = payload.language if payload and payload.language is not None else language
+    eff_style = payload.style_examples if payload and payload.style_examples is not None else style_examples
+    eff_remember = payload.remember_style if payload else remember_style
+    eff_temp = payload.temperature if payload and payload.temperature is not None else temperature
     try:
         pkg = run_content_pipeline(
-            slot=slot,
-            force_mock=mock,
-            custom_topic=topic,
-            niche_override=niche,
-            language_override=language,
+            slot=eff_slot,
+            force_mock=eff_mock,
+            custom_topic=eff_topic,
+            niche_override=eff_niche,
+            language_override=eff_language,
+            style_examples_override=eff_style,
+            remember_style=eff_remember,
+            temperature_override=eff_temp,
         )
         return {
             "status": "success",
@@ -413,6 +440,7 @@ def api_generate_run(
             "topic": pkg.topic,
             "title": pkg.metadata.title,
             "duration": pkg.total_duration_seconds,
+            "style_examples_used": bool(pkg.style_examples_used),
         }
     except Exception as e:
         logger.error("UI generation failed: %s", e)
@@ -435,9 +463,100 @@ def api_trigger_scheduled(slot: SlotType):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _natural_sort_key(text: str) -> list:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
+
+
+def _extract_clips_from_zip(zip_path: Path, run_export_dir: Path) -> List[str]:
+    """Safely extract valid .mp4 scene clips and optional voiceover.mp3 from a Google Flow ZIP."""
+    if not zipfile.is_zipfile(zip_path):
+        raise HTTPException(status_code=400, detail=f"Uploaded ZIP '{zip_path.name}' is corrupted or not a valid ZIP archive.")
+
+    max_members = 50
+    max_single_bytes = 250 * 1024 * 1024
+    max_total_bytes = 600 * 1024 * 1024
+    extracted_names: List[str] = []
+    total_extracted = 0
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        valid_infos = []
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            posix_path = PurePosixPath(info.filename.replace("\\", "/"))
+            if "__MACOSX" in posix_path.parts:
+                continue
+            base = posix_path.name
+            if not base or base.startswith("."):
+                continue
+            lower_base = base.lower()
+            if not (lower_base.endswith(".mp4") or lower_base == "voiceover.mp3"):
+                continue
+            if info.file_size < 1024:
+                continue
+            if info.file_size > max_single_bytes:
+                raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeds 250 MB safety limit.")
+            valid_infos.append((info, base, lower_base))
+
+        if not valid_infos:
+            raise HTTPException(
+                status_code=400,
+                detail="ZIP archive contains no valid .mp4 clips (>= 1 KB) or voiceover.mp3.",
+            )
+        if len(valid_infos) > max_members:
+            raise HTTPException(status_code=400, detail=f"ZIP archive contains too many media files ({len(valid_infos)} > {max_members}).")
+
+        vo_infos = [item for item in valid_infos if item[2] == "voiceover.mp3"]
+        mp4_infos = sorted([item for item in valid_infos if item[2].endswith(".mp4")], key=lambda item: _natural_sort_key(item[1]))
+        explicit_nums = {extract_scene_number(base) for _, base, _ in mp4_infos if extract_scene_number(base) > 0}
+        next_auto_idx = 1
+
+        for info, base, lower_base in [*vo_infos, *mp4_infos]:
+            total_extracted += info.file_size
+            if total_extracted > max_total_bytes:
+                raise HTTPException(status_code=400, detail="ZIP archive uncompressed size exceeds 600 MB limit.")
+
+            if lower_base == "voiceover.mp3":
+                dest_name = "voiceover.mp3"
+            else:
+                scene_num = extract_scene_number(base)
+                if scene_num > 0:
+                    dest_name = f"scene_{scene_num:02d}.mp4"
+                else:
+                    while next_auto_idx in explicit_nums:
+                        next_auto_idx += 1
+                    dest_name = f"scene_{next_auto_idx:02d}.mp4"
+                    explicit_nums.add(next_auto_idx)
+                    next_auto_idx += 1
+
+            dest_path = run_export_dir / dest_name
+            tmp_entry = run_export_dir / f".zip.{dest_name}.part.{secrets.token_hex(4)}"
+            try:
+                with zf.open(info, "r") as src, open(tmp_entry, "wb") as dst:
+                    bytes_copied = 0
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        bytes_copied += len(chunk)
+                        if bytes_copied > max_single_bytes:
+                            raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeded maximum allowed size.")
+                        dst.write(chunk)
+                os.replace(tmp_entry, dest_path)
+                if dest_name == "voiceover.mp3":
+                    (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
+                    (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
+                extracted_names.append(dest_name)
+            finally:
+                if tmp_entry.exists():
+                    tmp_entry.unlink(missing_ok=True)
+
+    return sorted(extracted_names)
+
+
 @app.post("/api/upload-clips/{run_id}")
 async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
-    """Upload exported Google Flow scene clips (scene_01.mp4..) and optional voiceover.mp3."""
+    """Upload exported Google Flow scene clips (scene_01.mp4..), project .zip, and optional voiceover.mp3."""
     _validate_run_id(run_id)
     pkg = storage.load_package(run_id)
     if not pkg:
@@ -453,20 +572,26 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
         if not raw_name:
             raise HTTPException(status_code=400, detail="Uploaded file is missing a filename.")
         lower_name = raw_name.lower()
-        if not (lower_name.endswith(".mp4") or lower_name == "voiceover.mp3"):
+        is_zip = lower_name.endswith(".zip")
+        if not (lower_name.endswith(".mp4") or lower_name == "voiceover.mp3" or is_zip):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file '{raw_name}'. Upload scene_01.mp4..scene_0N.mp4 or voiceover.mp3."
+                detail=f"Unsupported file '{raw_name}'. Upload scene_01.mp4..scene_0N.mp4, a Google Flow .zip export, or voiceover.mp3."
             )
-        if lower_name.endswith(".mp4") and extract_scene_number(raw_name) <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"MP4 filename '{raw_name}' must follow scene_01.mp4 naming convention."
-            )
+        if lower_name.endswith(".mp4"):
+            scene_num = extract_scene_number(raw_name)
+            if scene_num <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"MP4 filename '{raw_name}' must follow scene_01.mp4 naming convention."
+                )
+            normalized_name = f"scene_{scene_num:02d}.mp4"
+        else:
+            normalized_name = raw_name
 
-        target_path = run_export_dir / raw_name
         tmp_path = run_export_dir / f".{raw_name}.part.{secrets.token_hex(4)}"
         total_bytes = 0
+        max_upload_bytes = 500 * 1024 * 1024
         try:
             with open(tmp_path, "wb") as out_file:
                 while True:
@@ -475,23 +600,29 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
                         break
                     out_file.write(chunk)
                     total_bytes += len(chunk)
-            if total_bytes < 1024:
-                raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
-            os.replace(tmp_path, target_path)
-            if lower_name == "voiceover.mp3":
-                (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
-                (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
-            uploaded.append(raw_name)
+                    if total_bytes > max_upload_bytes:
+                        raise HTTPException(status_code=400, detail=f"File '{raw_name}' exceeds 500 MB upload limit.")
+            if is_zip:
+                if total_bytes < 22:
+                    raise HTTPException(status_code=400, detail=f"ZIP file '{raw_name}' is empty or invalid.")
+                extracted = _extract_clips_from_zip(tmp_path, run_export_dir)
+                uploaded.extend(extracted)
+            else:
+                if total_bytes < 1024:
+                    raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
+                target_path = run_export_dir / normalized_name
+                os.replace(tmp_path, target_path)
+                if normalized_name == "voiceover.mp3":
+                    (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
+                    (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
+                uploaded.append(normalized_name)
         finally:
             await upload.close()
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
 
-    found_numbers = {
-        extract_scene_number(f.name)
-        for f in run_export_dir.glob("*.mp4")
-        if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
-    }
+    mp4_files = sorted(f.name for f in run_export_dir.glob("*.mp4") if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024)
+    found_numbers = {extract_scene_number(f) for f in mp4_files}
     missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
 
     logger.info("Uploaded %d clip(s) for run %s: %s", len(uploaded), run_id, uploaded)
@@ -499,6 +630,8 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
         "status": "success",
         "run_id": run_id,
         "uploaded": uploaded,
+        "clips": mp4_files,
+        "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
         "found_scenes": sorted(found_numbers),
         "missing_scenes": missing_scenes,
     }

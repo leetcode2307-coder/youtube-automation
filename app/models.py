@@ -93,6 +93,7 @@ class ProductionPackage(BaseModel):
     sources: List[str] = Field(default_factory=list, description="Source notes, documentation references, or citations")
     cta: str = Field(default="Subscribe for more daily insights!", description="Call to action")
     privacy_status: Optional[PrivacyStatus] = Field(default=None, description="Target YouTube upload privacy")
+    style_examples_used: str = Field(default="", description="Optional creator style/description memory used to guide prompts")
     status: RunStatus = Field(default="generated")
     error_message: Optional[str] = None
 
@@ -109,6 +110,8 @@ class StudioConfig(BaseModel):
     default_privacy_status: PrivacyStatus = Field(default="private")
     synthetic_media_default: bool = Field(default=True)
     groq_model: str = Field(default="llama-3.3-70b-versatile", min_length=2)
+    llm_temperature: float = Field(default=0.9, ge=0.0, le=1.5)
+    prompt_style_examples: str = Field(default="", max_length=3000)
     tts_voice: str = Field(default="en-US-ChristopherNeural", min_length=2)
     use_ai_voiceover: bool = Field(default=True)
     audio_mode: AudioModeType = Field(default="ai_voiceover")

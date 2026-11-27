@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_MAX_TOKENS: int = 900
+    GROQ_TEMPERATURE: float = 0.9
 
     # Default Studio & Niche Settings (Overridable via UI in data/studio_settings.json)
     STUDIO_NAME: str = "AI Engineering Shorts Studio"

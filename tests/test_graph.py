@@ -234,3 +234,69 @@ def test_research_node_graceful_fallback(monkeypatch):
     })
     assert len(res["key_insights"]) == 2
     assert res["sources"] == []
+
+
+def test_temperature_and_optional_style_memory(tmp_path, monkeypatch):
+    """Verify higher creative temperature wiring and optional style/description memory."""
+    test_data_dir = tmp_path / "data"
+    monkeypatch.setattr(settings, "DATA_DIR", test_data_dir)
+    monkeypatch.setattr(settings, "PACKAGES_DIR", test_data_dir / "packages")
+    monkeypatch.setattr(settings, "FLOW_EXPORTS_DIR", test_data_dir / "flow_exports")
+    monkeypatch.setattr(settings, "FINAL_OUTPUT_DIR", test_data_dir / "final")
+    monkeypatch.setattr(settings, "TOPIC_HISTORY_FILE", test_data_dir / "topic_history.json")
+    monkeypatch.setattr(settings, "UPLOAD_LEDGER_FILE", test_data_dir / "upload_ledger.json")
+    monkeypatch.setattr(settings, "APPROVALS_FILE", test_data_dir / "approvals.json")
+    monkeypatch.setattr(settings, "STUDIO_SETTINGS_FILE", test_data_dir / "studio_settings.json")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_valid_format")
+    settings.ensure_directories()
+
+    default_llm = llm_module.get_llm(force_mock=False)
+    assert isinstance(default_llm, ChatGroq)
+    assert default_llm.temperature == pytest.approx(settings.GROQ_TEMPERATURE)
+    assert default_llm.temperature >= 0.85
+
+    custom_llm = llm_module.get_llm(force_mock=False, temperature=1.15)
+    assert isinstance(custom_llm, ChatGroq)
+    assert custom_llm.temperature == pytest.approx(1.15)
+
+    captured_calls = []
+
+    def _fake_invoke(schema, prompt, force_mock=False, model_name=None, max_tokens=None, temperature=None):
+        captured_calls.append({"schema": schema.__name__, "prompt": prompt, "temperature": temperature})
+        return llm_module.MockStructuredOutput(schema).invoke(prompt)
+
+    monkeypatch.setattr(graph_module, "invoke_structured_output", _fake_invoke)
+
+    # 1. Without style examples -> completely optional, no style memory block injected
+    graph_module.select_topic_node({"niche": "Science", "language": "english", "llm_temperature": 1.05})
+    assert captured_calls[-1]["temperature"] == pytest.approx(1.05)
+    assert "CREATOR STYLE & DESCRIPTION MEMORY" not in captured_calls[-1]["prompt"]
+
+    # 2. With style examples -> injected into creative topic + script prompts
+    graph_module.draft_script_node({
+        "niche": "Science",
+        "language": "english",
+        "topic": "Quantum Tunneling",
+        "angle": "How particles walk through walls",
+        "key_insights": ["Wave probability passes barriers"],
+        "llm_temperature": 1.1,
+        "style_examples": "Mystery noir hook in 2s, neon rim light, twist payoff at 32s.",
+    })
+    assert captured_calls[-1]["temperature"] == pytest.approx(1.1)
+    assert "Mystery noir hook in 2s" in captured_calls[-1]["prompt"]
+
+    # 3. Pipeline remember_style persistence and optional bypass
+    pkg1 = run_content_pipeline(
+        "morning",
+        force_mock=True,
+        style_examples_override="Dramatic whisper intro with fast montage cuts.",
+        remember_style=True,
+    )
+    assert pkg1.style_examples_used == "Dramatic whisper intro with fast montage cuts."
+    assert storage.get_studio_config().prompt_style_examples == "Dramatic whisper intro with fast montage cuts."
+
+    pkg2 = run_content_pipeline("evening", force_mock=True)
+    assert pkg2.style_examples_used == "Dramatic whisper intro with fast montage cuts."
+
+    pkg3 = run_content_pipeline("morning", force_mock=True, style_examples_override="")
+    assert pkg3.style_examples_used == ""

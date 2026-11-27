@@ -64,6 +64,8 @@ class GraphState(TypedDict, total=False):
     default_cta: str
     category_id: str
     groq_model: str
+    llm_temperature: float
+    style_examples: str
     min_duration_seconds: int
     max_duration_seconds: int
     min_scenes: int
@@ -171,10 +173,36 @@ def _normalize_metadata_output(
     )
 
 
+def _resolve_temperature(state: GraphState, *, creative: bool) -> float:
+    """Resolve generation temperature from state, keeping metadata/research steadier than storytelling."""
+    raw = state.get("llm_temperature", settings.GROQ_TEMPERATURE)
+    try:
+        base_temp = max(0.0, min(1.5, float(raw)))
+    except (TypeError, ValueError):
+        base_temp = settings.GROQ_TEMPERATURE
+    if creative:
+        return base_temp
+    return max(0.45, min(base_temp, 0.75))
+
+
+def _resolve_style_memory_block(state: GraphState) -> str:
+    """Format optional creator-supplied style/description memory examples when provided."""
+    examples = (state.get("style_examples") or "").strip()
+    if not examples:
+        return ""
+    return (
+        "\nOPTIONAL CREATOR STYLE & DESCRIPTION MEMORY (Emulate this narrative vibe, "
+        "hook rhythm, visual specificity, and pacing WITHOUT copying facts verbatim):\n"
+        f"{examples}\n"
+    )
+
+
 def select_topic_node(state: GraphState) -> Dict[str, Any]:
     logger.info("Executing select_topic_node for run %s (%s)", state.get("run_id"), state.get("slot"))
     force_mock = state.get("force_mock", False)
     groq_model = state.get("groq_model")
+    creative_temp = _resolve_temperature(state, creative=True)
+    style_block = _resolve_style_memory_block(state)
     niche = state.get("niche") or settings.DEFAULT_NICHE
     language = normalize_language(state.get("language"))
     lang_profile = LANGUAGE_PROFILES[language]
@@ -189,11 +217,13 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
                 "angle": f"Practical, high-retention {niche} ({lang_profile['label']}) breakdown on {custom_topic}",
             }
         prompt = (
-            f"You are a YouTube Shorts strategist specializing in '{niche}' for {lang_profile['label']} audiences.\n"
+            f"You are a bold creative director and YouTube Shorts storyteller specializing in '{niche}' for {lang_profile['label']} audiences.\n"
             f"Tone/Audience: {tone}\n"
             f"Target Language: {lang_profile['label']}. {lang_profile['script_instruction']}\n"
+            f"{style_block}"
             f"The creator specifically requested this topic: '{custom_topic}'.\n"
-            "Keep the topic aligned to the requested subject and propose a sharp, visual storytelling angle (<= 40 words) ideal for 8-15s Google Flow Omni scenes."
+            "Keep the topic aligned to the requested subject and invent a dramatic, visually gripping story arc "
+            "(unexpected conflict, reveal, or contrast <= 40 words) ideal for 8-15s Google Flow Omni scenes."
         )
         try:
             result: TopicOutput = invoke_structured_output(
@@ -201,6 +231,7 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
                 prompt,
                 force_mock=force_mock,
                 model_name=groq_model,
+                temperature=creative_temp,
             )
             return {
                 "topic": custom_topic,
@@ -217,13 +248,16 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
     recent_str = "\n".join(f"- {t}" for t in recent[-20:]) if recent else "None (first run)"
 
     prompt = (
-        f"You are a Lead Content Strategist for a YouTube Shorts channel in the '{niche}' niche.\n"
+        f"You are a creative Lead Content Strategist for a viral YouTube Shorts channel in the '{niche}' niche.\n"
         f"Target Language: {lang_profile['label']}.\n"
         f"Audience & Tone: {tone}\n"
-        f"Select ONE compelling, highly visual topic for a YouTube Short (keep topic under 120 characters) suited to 8-15s AI video scenes.\n"
+        f"{style_block}"
+        "Select ONE original, cinematic, high-retention topic for a YouTube Short (keep topic under 120 characters) "
+        "built around a vivid micro-story, paradox, contrast, or human-stakes reveal suited to 8-15s AI video scenes.\n"
+        "Avoid bland textbook definitions; pick a concrete scenario or turning point viewers immediately picture.\n"
         f"Focus Areas / Subtopics: {domains}\n\n"
         f"Recently covered topics (DO NOT DUPLICATE THESE):\n{recent_str}\n\n"
-        "Provide a unique topic, concise visual angle (1-2 sentences), and brief reasoning."
+        "Provide a unique topic, vivid story angle (1-2 sentences), and brief reasoning."
     )
 
     try:
@@ -232,6 +266,7 @@ def select_topic_node(state: GraphState) -> Dict[str, Any]:
             prompt,
             force_mock=force_mock,
             model_name=groq_model,
+            temperature=creative_temp,
         )
     except Exception as exc:
         raise RuntimeError(f"Stage 'select_topic' failed for run {state.get('run_id')}: {exc}") from exc
@@ -285,6 +320,8 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
     logger.info("Executing draft_script_node (Attempt %d)", state.get("retry_count", 0) + 1)
     force_mock = state.get("force_mock", False)
     groq_model = state.get("groq_model")
+    creative_temp = _resolve_temperature(state, creative=True)
+    style_block = _resolve_style_memory_block(state)
     niche = state.get("niche") or settings.DEFAULT_NICHE
     language = normalize_language(state.get("language"))
     lang_profile = LANGUAGE_PROFILES[language]
@@ -305,14 +342,18 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
         )
 
     prompt = (
-        f"You are writing a YouTube Short script and Google Flow Omni video prompts ({min_dur}-{max_dur}s total) in '{niche}'.\n"
+        f"You are an imaginative film director and YouTube Shorts storyteller writing a script and Google Flow Omni video prompts ({min_dur}-{max_dur}s total) in '{niche}'.\n"
         f"Target Language: {lang_profile['label']}. {lang_profile['script_instruction']}\n"
         f"Audience & Tone: {tone}\n"
         f"Topic: {state.get('topic')}\n"
         f"Angle: {state.get('angle')}\n"
         f"Key Insights: {', '.join(state.get('key_insights', []))}\n"
+        f"{style_block}"
         f"{retry_feedback}\n"
-        "STRICT CONSTRAINTS (GOOGLE AI PRO — GOOGLE FLOW OMNI MODEL):\n"
+        "CREATIVE STORYTELLING DIRECTION:\n"
+        "- Craft a connected narrative arc with clear setup -> escalating tension/discovery -> memorable payoff/twist (never dry bullet-point facts).\n"
+        "- Make every visual_prompt richly cinematic: specify foreground/subject action, camera motion (push-in, orbit, whip-pan, macro-to-wide), lighting contrast, mood, and texture.\n"
+        "\nSTRICT CONSTRAINTS (GOOGLE AI PRO — GOOGLE FLOW OMNI MODEL):\n"
         f"1. Total duration MUST be between {min_dur} and {max_dur} seconds.\n"
         f"2. Break the video into {min_scenes} to {max_scenes} sequential scenes.\n"
         "3. Each scene duration_seconds MUST be an integer between 8 and 15 (optimized for Google Flow Omni 8-15s clips).\n"
@@ -322,11 +363,11 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
         "   - role (e.g. 'Protagonist', 'Host')\n"
         "   - visual_description (immutable English appearance prompt for Google Flow Characters: age, face, hair, clothing, colors, art/cinematic style)\n"
         "6. For each scene, provide:\n"
-        f"   - narration: natural spoken lines in {lang_profile['label']} matching an 8-15s beat (2-3 crisp sentences)\n"
+        f"   - narration: expressive spoken lines in {lang_profile['label']} matching an 8-15s beat (2-3 crisp sentences)\n"
         f"   - on_screen_text: punchy 2-6 word caption in {lang_profile['label']}\n"
         "   - visual_prompt: VIVID ENGLISH cinematic prompt (under 240 characters) for Google Flow Omni 9:16 vertical video. Reference the exact character 'name' from 'characters', camera angle/motion, lighting, environment, and action progression.\n"
         "   - export_filename: 'scene_01.mp4', 'scene_02.mp4', etc.\n"
-        f"7. High-retention opening hook in {lang_profile['label']} for scene 1 (0-3s), and punchy CTA in {lang_profile['label']} (inspired by: '{default_cta}').\n"
+        f"7. High-retention 0-3s pattern-interrupt opening hook in {lang_profile['label']} for scene 1, and punchy CTA in {lang_profile['label']} (inspired by: '{default_cta}').\n"
         "Keep prompts crisp so the complete JSON finishes cleanly without truncation."
     )
 
@@ -336,6 +377,7 @@ def draft_script_node(state: GraphState) -> Dict[str, Any]:
             prompt,
             force_mock=force_mock,
             model_name=groq_model,
+            temperature=creative_temp,
         )
     except Exception as exc:
         raise RuntimeError(f"Stage 'draft_script' failed for run {state.get('run_id')}: {exc}") from exc
@@ -551,6 +593,7 @@ def validate_package_node(state: GraphState) -> Dict[str, Any]:
         sources=state.get("sources", []),
         cta=state.get("cta", default_cta),
         privacy_status=state.get("privacy_status", settings.DEFAULT_PRIVACY_STATUS),
+        style_examples_used=(state.get("style_examples") or "").strip(),
         status="generated",
     )
 

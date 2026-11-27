@@ -140,6 +140,110 @@
         <!-- SECTION 1: OVERVIEW                                          -->
         <!-- ============================================================ -->
         <section id="section-overview" class="section-panel active" aria-label="Overview">
+          <!-- Create New Short Panel (Primary Action First) -->
+          <div class="create-panel">
+            <div class="card-header" style="margin-bottom:0;">
+              <div>
+                <h2 class="card-title">Create a New YouTube Short</h2>
+                <p class="card-subtitle">Generates a creative story arc, consistent character sheet, multi-language voiceover script, and 8&ndash;15s Google Flow Omni prompts.</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('settings')">Studio &amp; AI Settings</button>
+            </div>
+            <div class="create-grid">
+              <div class="field">
+                <label for="quickNiche">Topic Niche / Interest</label>
+                <input id="quickNiche" class="input" type="text" value="{{ studio_cfg.niche }}" placeholder="e.g. AI Engineering, Space, Devotional">
+              </div>
+              <div class="field">
+                <label for="quickLanguage">Language</label>
+                <select id="quickLanguage" class="select">
+                  {% for lkey, llabel in languages %}
+                  <option value="{{ lkey }}" {{ 'selected' if studio_cfg.language == lkey else '' }}>{{ llabel }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="quickTopic">Specific Topic (Optional)</label>
+                <input id="quickTopic" class="input" type="text" placeholder="Leave blank to let AI invent a creative topic">
+              </div>
+              <div class="btn-group">
+                <button type="button" class="btn btn-primary" onclick="generateShort('morning', this)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  Generate Morning Short
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="generateShort('evening', this)">
+                  Generate Evening Short
+                </button>
+              </div>
+            </div>
+
+            <details class="style-memory-drawer" {{ 'open' if studio_cfg.prompt_style_examples else '' }}>
+              <summary>
+                <span style="display:inline-flex; align-items:center; gap:8px;">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                  Style &amp; Description Memory Examples
+                  <span class="badge badge-neutral">Optional</span>
+                  {% if studio_cfg.prompt_style_examples %}
+                  <span class="badge badge-info">Saved Memory Loaded</span>
+                  {% endif %}
+                </span>
+                <span style="font-size:12px; color:var(--color-muted-foreground);">Creativity Temp: <b class="mono">{{ "%.2f"|format(studio_cfg.llm_temperature) }}</b></span>
+              </summary>
+              <div style="margin-top:10px;">
+                <p class="field-hint" style="margin:0 0 6px 0;">
+                  Optionally paste 1&ndash;3 example descriptions of the storytelling vibe, camera mood, pacing, or hook style you want the AI to emulate. Leave empty for standard creative generation.
+                </p>
+                <div class="preset-row" aria-label="Optional style presets">
+                  <span class="field-hint" style="margin-right:4px;">Quick fill (optional):</span>
+                  <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="applyStylePreset('suspense')">Suspense &amp; Reveal</button>
+                  <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="applyStylePreset('warm')">Warm Moral Story</button>
+                  <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="applyStylePreset('tech')">Fast Visual Explainer</button>
+                  <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="clearQuickStyleMemory()">Clear Style Box</button>
+                </div>
+                <textarea id="quickStyleExamples" class="textarea" rows="3" maxlength="3000" placeholder="Optional example: Start with an unexpected visual mystery in 2 seconds, moody cinematic rim lighting, slow dolly zoom into character reactions, emotional twist at 32s...">{{ studio_cfg.prompt_style_examples }}</textarea>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">
+                  <label class="checkbox-row" style="margin:0; flex:1; padding:8px 10px;">
+                    <input type="checkbox" id="quickRememberStyle" {{ 'checked' if studio_cfg.prompt_style_examples else '' }}>
+                    <span style="font-size:12.5px;"><b>Remember as Studio Style Memory:</b> Save this optional style guide for future Shorts automatically.</span>
+                  </label>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Compact 4-Step End-to-End Guide -->
+          <div class="workflow-strip" aria-label="End-to-end Shorts workflow">
+            <div class="workflow-pill">
+              <span class="workflow-num">1</span>
+              <div class="workflow-text">
+                <strong>Script &amp; Characters</strong>
+                <span>AI crafts creative hook, voiceover &amp; Flow Omni prompts</span>
+              </div>
+            </div>
+            <div class="workflow-pill">
+              <span class="workflow-num">2</span>
+              <div class="workflow-text">
+                <strong>Generate in Google Flow</strong>
+                <span>Add consistent Characters &amp; render 8&ndash;15s Omni clips</span>
+              </div>
+            </div>
+            <div class="workflow-pill">
+              <span class="workflow-num">3</span>
+              <div class="workflow-text">
+                <strong>Upload Clips or ZIP</strong>
+                <span>Drop exported ZIP or scene MP4s; auto-adds AI voiceover</span>
+              </div>
+            </div>
+            <div class="workflow-pill">
+              <span class="workflow-num">4</span>
+              <div class="workflow-text">
+                <strong>Review &amp; Publish</strong>
+                <span>Approve Short to publish &amp; auto-clean scene clips</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compact KPI Summary Row -->
           <div class="kpi-grid">
             <div class="kpi-card">
               <div class="kpi-label">Automation Status</div>
@@ -171,44 +275,6 @@
                 {% else %}
                 No errors detected
                 {% endif %}
-              </div>
-            </div>
-          </div>
-
-          <!-- Create New Short Panel -->
-          <div class="create-panel">
-            <div class="card-header" style="margin-bottom:0;">
-              <div>
-                <h2 class="card-title">Create a New YouTube Short</h2>
-                <p class="card-subtitle">Generates a fresh topic, consistent character sheet, multi-language voiceover script, and 8–15s Google Flow Omni prompts.</p>
-              </div>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="navigateTo('settings')">Change Studio Defaults</button>
-            </div>
-            <div class="create-grid">
-              <div class="field">
-                <label for="quickNiche">Topic Niche / Interest</label>
-                <input id="quickNiche" class="input" type="text" value="{{ studio_cfg.niche }}" placeholder="e.g. AI Engineering, Space, Devotional">
-              </div>
-              <div class="field">
-                <label for="quickLanguage">Language</label>
-                <select id="quickLanguage" class="select">
-                  {% for lkey, llabel in languages %}
-                  <option value="{{ lkey }}" {{ 'selected' if studio_cfg.language == lkey else '' }}>{{ llabel }}</option>
-                  {% endfor %}
-                </select>
-              </div>
-              <div class="field">
-                <label for="quickTopic">Specific Topic (Optional)</label>
-                <input id="quickTopic" class="input" type="text" placeholder="Leave blank to let AI pick a fresh topic">
-              </div>
-              <div class="btn-group">
-                <button type="button" class="btn btn-primary" onclick="generateShort('morning', this)">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                  Generate Morning Short
-                </button>
-                <button type="button" class="btn btn-secondary" onclick="generateShort('evening', this)">
-                  Generate Evening Short
-                </button>
               </div>
             </div>
           </div>
@@ -316,6 +382,9 @@
                   {% if p.metadata.synthetic_media_disclosure %}
                   <span class="badge badge-purple">AI Content Disclosed</span>
                   {% endif %}
+                  {% if p.style_examples_used %}
+                  <span class="badge badge-amber" title="{{ p.style_examples_used }}">Style Memory Used</span>
+                  {% endif %}
                 </div>
                 <div class="mono" style="color:var(--color-muted-foreground);">
                   {{ p.run_id }} &bull; {{ p.total_duration_seconds }}s
@@ -367,73 +436,107 @@
                 <span class="clip-chip">Intermediate scene_xx.mp4 clips cleaned up</span>
               </div>
               {% else %}
-              {% if p.characters %}
-              <div class="character-box">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <strong>Consistent Characters (Add in Google Flow first)</strong>
-                  <span style="font-size:12px; color:var(--color-muted-foreground);">Use in Google Flow &rarr; Characters so faces &amp; outfits stay identical across scenes</span>
-                </div>
-                <div class="character-grid">
-                  {% for ch in p.characters %}
-                  <div class="character-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px;">
-                      <strong style="font-size:13px;">{{ ch.name }}</strong>
-                      <button type="button" class="btn btn-secondary btn-sm" style="min-height:26px; padding:2px 8px; font-size:11px;"
-                              data-copy="{{ ch.visual_description }}" data-label="{{ ch.name }}"
-                              onclick="copyText(this.dataset.copy, this.dataset.label)">Copy</button>
+              <div class="run-workspace-grid">
+                <!-- Left Column: Consistent Characters & Google Flow Guide -->
+                <div>
+                  {% if p.characters %}
+                  <div class="character-box">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                      <strong>Consistent Characters (Add in Google Flow first)</strong>
+                      <span style="font-size:12px; color:var(--color-muted-foreground);">Keep faces &amp; outfits identical</span>
                     </div>
-                    <div style="font-size:11px; color:var(--color-muted-foreground); margin-bottom:4px;">{{ ch.role }}</div>
-                    <div style="font-size:12px; color:var(--color-foreground-secondary);">{{ ch.visual_description }}</div>
+                    <div class="character-grid">
+                      {% for ch in p.characters %}
+                      <div class="character-card">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px;">
+                          <strong style="font-size:13px;">{{ ch.name }}</strong>
+                          <button type="button" class="btn btn-secondary btn-sm" style="min-height:26px; padding:2px 8px; font-size:11px;"
+                                  data-copy="{{ ch.visual_description }}" data-label="{{ ch.name }}"
+                                  onclick="copyText(this.dataset.copy, this.dataset.label, this)">Copy</button>
+                        </div>
+                        <div style="font-size:11px; color:var(--color-muted-foreground); margin-bottom:4px;">{{ ch.role }}</div>
+                        <div style="font-size:12px; color:var(--color-foreground-secondary);">{{ ch.visual_description }}</div>
+                      </div>
+                      {% endfor %}
+                    </div>
                   </div>
-                  {% endfor %}
+                  {% endif %}
+
+                  <details class="flow-guide-box" {{ 'open' if p.status == 'awaiting_flow_export' else '' }}>
+                    <summary style="cursor:pointer; font-weight:600; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                      <span>Google Flow Omni Guide (8&ndash;15s, 9:16)</span>
+                      <span style="font-size:11.5px; color:var(--color-muted-foreground); font-weight:500;">Show / Hide Steps</span>
+                    </summary>
+                    <ol style="margin-top:8px;">
+                      <li>Open <b>Google Flow</b> (9:16 vertical), choose <b>Omni</b> (8&ndash;15s/clip), and add the <b>Characters</b> above first.</li>
+                      <li>Click <b>View Visual Prompts</b> below and render scenes <b>one by one</b> in order.</li>
+                      <li><b>Download project ZIP</b> (or individual clips) and drop either the <b>.zip archive</b> OR extracted <span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span> files into the upload panel on the right.</li>
+                    </ol>
+                  </details>
+                </div>
+
+                <!-- Right Column: Fixed Clip Checklist & Upload Station -->
+                <div class="upload-station" id="upload-station-{{ p.run_id }}" data-total-scenes="{{ p.scenes|length }}">
+                  <div class="upload-station-head">
+                    <strong style="font-size:13px;">Scene Clips &amp; Upload Station</strong>
+                    <span class="mono" id="clips-count-{{ p.run_id }}" style="color:var(--color-muted-foreground);">{{ item.clips_ready }}/{{ p.scenes|length }} ready</span>
+                  </div>
+
+                  <!-- Live Scene Clips Checklist -->
+                  <div class="clip-list" id="clip-list-{{ p.run_id }}">
+                    {% for sc in p.scenes %}
+                    <span class="clip-chip {{ 'ready' if sc.scene_number in item.existing_clips else '' }}" data-scene="{{ sc.scene_number }}" title="{{ sc.narration }}">
+                      {{ 'Ready: ' if sc.scene_number in item.existing_clips else 'Missing: ' }}{{ sc.export_filename }} ({{ sc.duration_seconds }}s)
+                    </span>
+                    {% endfor %}
+                    {% if item.has_custom_vo %}
+                    <span class="clip-chip ready" data-vo="custom">Ready: voiceover.mp3 (Custom)</span>
+                    {% elif studio_cfg.use_ai_voiceover %}
+                    <span class="clip-chip ready" data-vo="auto">AI Voiceover: Auto ({{ studio_cfg.audio_mode.replace('_', ' ') }})</span>
+                    {% else %}
+                    <span class="clip-chip" data-vo="clip">Audio: Uploaded Clip Audio</span>
+                    {% endif %}
+                  </div>
+
+                  <!-- Hidden File Inputs Kept Outside Dropzone (prevents click bubbling bugs) -->
+                  <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.zip,.mp3,video/mp4,application/zip,audio/mpeg" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
+                  <input type="file" id="vo-input-{{ p.run_id }}" accept=".mp3,audio/mpeg" style="display:none;" onchange="uploadVoiceoverFile('{{ p.run_id }}', this)">
+
+                  <!-- Fixed Dropzone + Explicit Pointer Buttons -->
+                  <div class="drop-zone"
+                       id="dropzone-{{ p.run_id }}"
+                       tabindex="0"
+                       role="button"
+                       aria-label="Upload scene clips or Google Flow ZIP for {{ p.run_id }}"
+                       ondragenter="handleDragEnter(event)"
+                       ondragover="event.preventDefault()"
+                       ondragleave="handleDragLeave(event)"
+                       ondrop="handleDrop(event, '{{ p.run_id }}')"
+                       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); openClipPicker('{{ p.run_id }}');}"
+                       onclick="triggerDropzonePick(event, '{{ p.run_id }}')">
+                    <div class="drop-zone-icon" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>
+                    <div><b>Drop Google Flow ZIP or extracted scene MP4s here</b></div>
+                    <div style="font-size:12px; color:var(--color-muted-foreground); margin-top:3px;">
+                      Accepts <span class="mono">.zip</span> project archive or <span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>
+                      {% if studio_cfg.auto_assemble_on_upload %}&bull; Auto-assembles when complete{% endif %}
+                    </div>
+                    <div class="upload-actions-row">
+                      <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openClipPicker('{{ p.run_id }}')">
+                        Select Clips or ZIP
+                      </button>
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openVoiceoverPicker('{{ p.run_id }}')">
+                        Custom Voiceover (.mp3)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="upload-queue-list" id="upload-queue-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
+                  <div class="progress-banner" id="progress-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
                 </div>
               </div>
               {% endif %}
-
-              <div class="flow-guide-box">
-                <strong>How to generate clips in Google AI Pro (Google Flow Omni, 8&ndash;15s):</strong>
-                <ol>
-                  <li>Open <b>Google Flow</b> (9:16 vertical), select the <b>Omni</b> model (8&ndash;15s per clip), and add the <b>Characters</b> above first for consistency.</li>
-                  <li>Click <b>View Visual Prompts</b> below and generate clips <b>one by one</b> matching each scene's target duration.</li>
-                  <li><b>Download the project ZIP</b> from Google Flow, <b>extract</b> the ZIP, verify names <span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>, and upload them below.</li>
-                </ol>
-              </div>
-
-              <!-- Scene Clips Checklist -->
-              <div class="clip-list">
-                {% for sc in p.scenes %}
-                <span class="clip-chip {{ 'ready' if sc.scene_number in item.existing_clips else '' }}" title="{{ sc.narration }}">
-                  {{ 'Ready: ' if sc.scene_number in item.existing_clips else 'Missing: ' }}{{ sc.export_filename }} ({{ sc.duration_seconds }}s)
-                </span>
-                {% endfor %}
-                {% if item.has_custom_vo %}
-                <span class="clip-chip ready">Ready: voiceover.mp3 (Custom)</span>
-                {% elif studio_cfg.use_ai_voiceover %}
-                <span class="clip-chip ready">AI Voiceover: Auto ({{ studio_cfg.audio_mode.replace('_', ' ') }})</span>
-                {% else %}
-                <span class="clip-chip">Audio: Uploaded Clip Audio</span>
-                {% endif %}
-              </div>
-
-              <!-- Upload Dropzone -->
-              <div class="drop-zone"
-                   tabindex="0"
-                   role="button"
-                   aria-label="Upload scene clips for {{ p.run_id }}"
-                   ondragover="event.preventDefault(); this.classList.add('drag-over');"
-                   ondragleave="this.classList.remove('drag-over');"
-                   ondrop="handleDrop(event, '{{ p.run_id }}')"
-                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); document.getElementById('clips-input-{{ p.run_id }}').click();}"
-                   onclick="document.getElementById('clips-input-{{ p.run_id }}').click()">
-                <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.mp3" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
-                <b>Drop or click to upload extracted clips</b> (<span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>)
-                {% if studio_cfg.auto_assemble_on_upload %}
-                &mdash; automatically assembles video &amp; opens review once all clips arrive (scene clips auto-clean after YouTube publish).
-                {% endif %}
-              </div>
-              {% endif %}
-
-              <div class="progress-banner" id="progress-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
 
               <!-- Inline Metadata & Settings Editor -->
               <details class="inline-drawer">
@@ -735,6 +838,7 @@
 
             <form onsubmit="saveAllSettings(event, false)">
               <div class="form-grid">
+                <div class="settings-group-title">1. Channel &amp; Story Voice</div>
                 <div class="field">
                   <label for="cfg-studio_name">Studio Name</label>
                   <input id="cfg-studio_name" class="input" type="text" value="{{ studio_cfg.studio_name }}" required>
@@ -751,18 +855,51 @@
                   <label for="cfg-niche">Channel Niche / Interest</label>
                   <input id="cfg-niche" class="input" type="text" value="{{ studio_cfg.niche }}" required>
                 </div>
-                <div class="field full">
-                  <label for="cfg-niche_domains">Focus Topics &amp; Keywords</label>
-                  <input id="cfg-niche_domains" class="input" type="text" value="{{ studio_cfg.niche_domains }}">
-                </div>
                 <div class="field">
                   <label for="cfg-audience_tone">Audience &amp; Tone</label>
                   <input id="cfg-audience_tone" class="input" type="text" value="{{ studio_cfg.audience_tone }}">
                 </div>
-                <div class="field">
+                <div class="field full">
+                  <label for="cfg-niche_domains">Focus Topics &amp; Keywords</label>
+                  <input id="cfg-niche_domains" class="input" type="text" value="{{ studio_cfg.niche_domains }}">
+                </div>
+                <div class="field full">
                   <label for="cfg-default_cta">Default Call-to-Action</label>
                   <input id="cfg-default_cta" class="input" type="text" value="{{ studio_cfg.default_cta }}">
                 </div>
+
+                <div class="settings-group-title">2. AI Creativity &amp; Style Memory (Optional)</div>
+                <div class="field">
+                  <label for="cfg-groq_model_select">AI Script Model (Groq)</label>
+                  <select id="cfg-groq_model_select" class="select" onchange="document.getElementById('cfg-groq_model').value=this.value">
+                    {% for m in groq_models %}
+                    <option value="{{ m }}" {{ 'selected' if studio_cfg.groq_model == m else '' }}>{{ m }}</option>
+                    {% endfor %}
+                    {% if studio_cfg.groq_model not in groq_models %}
+                    <option value="{{ studio_cfg.groq_model }}" selected>{{ studio_cfg.groq_model }} (Custom)</option>
+                    {% endif %}
+                  </select>
+                  <input id="cfg-groq_model" class="input" type="text" value="{{ studio_cfg.groq_model }}" aria-label="Custom Groq model ID">
+                </div>
+                <div class="field">
+                  <label for="cfg-llm_temperature">Story Creativity Temperature (0.2 Focused &ndash; 1.3 Wild)</label>
+                  <div class="temp-control-row">
+                    <input id="cfg-llm_temperature_range" class="temp-range" type="range" min="0.2" max="1.3" step="0.05" value="{{ '%.2f'|format(studio_cfg.llm_temperature) }}" oninput="syncTempControl(this.value)">
+                    <input id="cfg-llm_temperature" class="input mono" type="number" min="0" max="1.5" step="0.05" style="width:82px;" value="{{ '%.2f'|format(studio_cfg.llm_temperature) }}" oninput="syncTempControl(this.value)">
+                  </div>
+                  <div class="preset-row" style="margin:4px 0 0 0;">
+                    <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="syncTempControl(0.65)">0.65 Balanced</button>
+                    <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="syncTempControl(0.90)">0.90 Creative</button>
+                    <button type="button" class="btn btn-secondary btn-sm btn-pill" onclick="syncTempControl(1.10)">1.10 Bold</button>
+                  </div>
+                </div>
+                <div class="field full">
+                  <label for="cfg-prompt_style_examples">Saved Story &amp; Prompt Style Memory Examples (Optional)</label>
+                  <textarea id="cfg-prompt_style_examples" class="textarea" rows="3" maxlength="3000" placeholder="Optional: describe the exact storytelling hook, camera angles, pacing, or sample description style you love. Leave blank for default AI style.">{{ studio_cfg.prompt_style_examples }}</textarea>
+                  <span class="field-hint">Used as optional inspiration whenever you generate new Shorts (can also be overridden or cleared per Short in Overview).</span>
+                </div>
+
+                <div class="settings-group-title">3. Video, Voiceover &amp; YouTube Defaults</div>
                 <div class="field">
                   <label for="cfg-category_id">YouTube Category</label>
                   <select id="cfg-category_id" class="select">
@@ -777,18 +914,6 @@
                     <input id="cfg-min_duration_seconds" class="input" type="number" min="30" max="44" value="{{ studio_cfg.min_duration_seconds }}" aria-label="Minimum duration seconds">
                     <input id="cfg-max_duration_seconds" class="input" type="number" min="31" max="45" value="{{ studio_cfg.max_duration_seconds }}" aria-label="Maximum duration seconds">
                   </div>
-                </div>
-                <div class="field">
-                  <label for="cfg-groq_model_select">AI Script Model (Groq)</label>
-                  <select id="cfg-groq_model_select" class="select" onchange="document.getElementById('cfg-groq_model').value=this.value">
-                    {% for m in groq_models %}
-                    <option value="{{ m }}" {{ 'selected' if studio_cfg.groq_model == m else '' }}>{{ m }}</option>
-                    {% endfor %}
-                    {% if studio_cfg.groq_model not in groq_models %}
-                    <option value="{{ studio_cfg.groq_model }}" selected>{{ studio_cfg.groq_model }} (Custom)</option>
-                    {% endif %}
-                  </select>
-                  <input id="cfg-groq_model" class="input" type="text" value="{{ studio_cfg.groq_model }}" aria-label="Custom Groq model ID">
                 </div>
                 <div class="field">
                   <label for="cfg-tts_voice_select">Voiceover Speaker (Edge-TTS)</label>
@@ -818,6 +943,8 @@
                     <option value="public" {{ 'selected' if studio_cfg.default_privacy_status == 'public' else '' }}>Public (Publish immediately)</option>
                   </select>
                 </div>
+
+                <div class="settings-group-title">4. Schedule &amp; Automation Behavior</div>
                 <div class="field">
                   <label for="cfg-timezone">Schedule Timezone</label>
                   <input id="cfg-timezone" class="input" type="text" value="{{ studio_cfg.timezone }}">

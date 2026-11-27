@@ -34,16 +34,31 @@ def run_content_pipeline(
     custom_topic: Optional[str] = None,
     niche_override: Optional[str] = None,
     language_override: Optional[str] = None,
+    style_examples_override: Optional[str] = None,
+    remember_style: bool = False,
+    temperature_override: Optional[float] = None,
 ) -> ProductionPackage:
     """Execute the LangGraph content generation pipeline for a specific slot."""
     settings.ensure_directories()
     studio_cfg = storage.get_studio_config()
+    if style_examples_override is not None:
+        active_style_examples = style_examples_override.strip()[:3000]
+        if remember_style and active_style_examples != (studio_cfg.prompt_style_examples or "").strip():
+            studio_cfg = storage.save_studio_config(
+                studio_cfg.model_copy(update={"prompt_style_examples": active_style_examples})
+            )
+    else:
+        active_style_examples = (studio_cfg.prompt_style_examples or "").strip()
+
+    raw_temp = temperature_override if temperature_override is not None else studio_cfg.llm_temperature
+    active_temperature = max(0.0, min(1.5, float(raw_temp)))
+
     run_id, created_at_utc, scheduled_at_local = generate_run_id(slot, studio_cfg.timezone)
     active_niche = (niche_override or "").strip() or studio_cfg.niche
     active_language = normalize_language(language_override or studio_cfg.language)
     logger.info(
-        "Starting content generation pipeline: Run ID=%s, Slot=%s, Niche=%s, Language=%s",
-        run_id, slot, active_niche, active_language,
+        "Starting content generation pipeline: Run ID=%s, Slot=%s, Niche=%s, Language=%s, Temp=%.2f, StyleMemory=%s",
+        run_id, slot, active_niche, active_language, active_temperature, bool(active_style_examples),
     )
 
     # 1. Fetch recent topics from history to prevent duplication
@@ -63,6 +78,8 @@ def run_content_pipeline(
         "default_cta": studio_cfg.default_cta,
         "category_id": studio_cfg.category_id,
         "groq_model": studio_cfg.groq_model,
+        "llm_temperature": active_temperature,
+        "style_examples": active_style_examples,
         "min_duration_seconds": studio_cfg.min_duration_seconds,
         "max_duration_seconds": studio_cfg.max_duration_seconds,
         "min_scenes": studio_cfg.min_scenes,

@@ -422,3 +422,78 @@ def test_windows_asyncio_connection_reset_filter():
         assert forwarded[0]["exception"] is real_err
     finally:
         loop.close()
+
+
+def test_zip_upload_optional_style_memory_and_redesign_ui(test_package):
+    import io
+    import zipfile
+
+    run_id = test_package.run_id
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+
+    # 1. ZIP upload extracts clips safely (normalizes scene numbers, ignores junk, blocks traversal)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("__MACOSX/._scene_01.mp4", b"JUNK" * 500)
+        zf.writestr("flow_clip_alpha.mp4", b"CLIP_A_" * 300)
+        zf.writestr("nested/scene_2.mp4", b"CLIP_2_" * 300)
+        zf.writestr("../../scene_03.mp4", b"CLIP_3_" * 300)
+        zf.writestr("voiceover.mp3", b"CUSTOM_VO_" * 300)
+        zf.writestr("README.txt", b"ignored text file")
+    buf.seek(0)
+
+    res_zip = client.post(
+        f"/api/upload-clips/{run_id}",
+        files=[("files", ("google_flow_export.zip", buf.getvalue(), "application/zip"))],
+    )
+    assert res_zip.status_code == 200
+    zip_data = res_zip.json()
+    assert set(zip_data["uploaded"]) == {"scene_01.mp4", "scene_02.mp4", "scene_03.mp4", "voiceover.mp3"}
+    assert zip_data["has_custom_voiceover"] is True
+    assert (run_export_dir / "scene_01.mp4").exists()
+    assert (run_export_dir / "scene_03.mp4").exists()
+    assert not (run_export_dir.parent / "scene_03.mp4").exists()
+
+    # 2. JSON generate body with optional style_examples & remember_style + UI markers
+    res_gen = client.post(
+        "/api/generate",
+        json={
+            "slot": "morning",
+            "mock": True,
+            "niche": "AI Engineering",
+            "language": "english",
+            "style_examples": "Bold 2-second contrast hook with cyan studio lighting.",
+            "remember_style": True,
+            "temperature": 1.05,
+        },
+    )
+    assert res_gen.status_code == 200
+    assert res_gen.json()["style_examples_used"] is True
+    assert storage.get_studio_config().prompt_style_examples == "Bold 2-second contrast hook with cyan studio lighting."
+
+    # 3. Clear optional style memory cleanly via blank override + remember_style=True
+    res_clear = client.post(
+        "/api/generate",
+        json={
+            "slot": "evening",
+            "mock": True,
+            "style_examples": "",
+            "remember_style": True,
+        },
+    )
+    assert res_clear.status_code == 200
+    assert res_clear.json()["style_examples_used"] is False
+    assert storage.get_studio_config().prompt_style_examples == ""
+
+    res_dash = client.get("/")
+    assert res_dash.status_code == 200
+    assert "quickStyleExamples" in res_dash.text
+    assert "cfg-llm_temperature" in res_dash.text
+    assert "cfg-prompt_style_examples" in res_dash.text
+    assert "Select Clips or ZIP" in res_dash.text
+    assert "upload-queue-" in res_dash.text
+
+    res_css = client.get("/static/styles.css")
+    assert ".btn-spinner" in res_css.text
+    res_js = client.get("/static/app.js")
+    assert "triggerDropzonePick" in res_js.text

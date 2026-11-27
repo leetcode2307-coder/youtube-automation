@@ -188,6 +188,8 @@ class StorageManager:
             default_privacy_status=settings.DEFAULT_PRIVACY_STATUS,
             synthetic_media_default=settings.DEFAULT_SYNTHETIC_MEDIA,
             groq_model=settings.GROQ_MODEL,
+            llm_temperature=settings.GROQ_TEMPERATURE,
+            prompt_style_examples="",
             tts_voice=settings.TTS_VOICE,
             use_ai_voiceover=settings.DEFAULT_USE_AI_VOICEOVER,
             audio_mode="ai_voiceover" if settings.DEFAULT_USE_AI_VOICEOVER else "clip_audio_only",
