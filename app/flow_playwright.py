@@ -26,6 +26,17 @@ from app.storage import storage
 
 _RUNNING_LOCK = threading.RLock()
 _ACTIVE_JOBS: Dict[str, threading.Thread] = {}
+_GOOGLE_AUTH_COOKIE_NAMES = frozenset({
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+})
 _BLOCKED_ANALYTICS_HOSTS = (
     "googletagmanager.com",
     "google-analytics.com",
@@ -87,15 +98,20 @@ def get_flow_session_info(email: Optional[str]) -> Dict[str, Any]:
     path = get_session_storage_path(norm)
     meta_path = _session_meta_path(norm)
     cookie_count = 0
+    has_auth_cookie = False
     updated_at = ""
 
     if path.exists():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             cookies = raw.get("cookies", [])
-            cookie_count = len(cookies) if isinstance(cookies, list) else 0
+            if isinstance(cookies, list):
+                cookie_count = len(cookies)
+                cookie_names = {str(c.get("name", "")) for c in cookies if isinstance(c, dict)}
+                has_auth_cookie = bool(cookie_names & _GOOGLE_AUTH_COOKIE_NAMES)
         except Exception:
             cookie_count = 0
+            has_auth_cookie = False
 
     if meta_path.exists():
         try:
@@ -107,19 +123,52 @@ def get_flow_session_info(email: Optional[str]) -> Dict[str, Any]:
     return {
         "email": norm,
         "has_session": has_flow_session(norm),
+        "has_auth_cookie": has_auth_cookie,
         "cookie_count": cookie_count,
         "updated_at_utc": updated_at,
         "session_key": get_session_dir(norm).name if norm else "",
     }
 
 
-def save_flow_session_state(email: str, state_data: Dict[str, Any]) -> Dict[str, Any]:
+def _coerce_playwright_storage_state(raw_data: Any) -> Dict[str, Any]:
+    """Normalize either Playwright storage_state JSON or Chrome cookie-export JSON list."""
+    if isinstance(raw_data, dict) and isinstance(raw_data.get("cookies"), list):
+        return raw_data
+    if isinstance(raw_data, list):
+        same_site_map = {
+            "strict": "Strict",
+            "lax": "Lax",
+            "no_restriction": "None",
+            "none": "None",
+        }
+        normalized_cookies = []
+        for c in raw_data:
+            if not isinstance(c, dict) or not c.get("name") or "value" not in c:
+                continue
+            item: Dict[str, Any] = {
+                "name": str(c["name"]),
+                "value": str(c["value"]),
+                "domain": str(c.get("domain") or ".google.com"),
+                "path": str(c.get("path") or "/"),
+                "httpOnly": bool(c.get("httpOnly", False)),
+                "secure": bool(c.get("secure", True)),
+            }
+            ss = str(c.get("sameSite") or "").lower()
+            item["sameSite"] = same_site_map.get(ss, "Lax")
+            exp = c.get("expires", c.get("expirationDate"))
+            if isinstance(exp, (int, float)) and exp > 0:
+                item["expires"] = float(exp)
+            normalized_cookies.append(item)
+        return {"cookies": normalized_cookies, "origins": []}
+    raise ValueError("Invalid Playwright storage_state JSON: expected object with 'cookies' list or exported cookie array.")
+
+
+def save_flow_session_state(email: str, state_data: Any) -> Dict[str, Any]:
     """Validate and persist Playwright storage_state JSON cleanly without leaking secrets."""
     norm = normalize_google_email(email)
     if not norm or "@" not in norm:
         raise ValueError("A valid Google Pro email is required to save a Flow session.")
-    if not isinstance(state_data, dict) or not isinstance(state_data.get("cookies"), list):
-        raise ValueError("Invalid Playwright storage_state JSON: expected top-level object with 'cookies' list.")
+    coerced = _coerce_playwright_storage_state(state_data)
 
     session_dir = get_session_dir(norm)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +178,7 @@ def save_flow_session_state(email: str, state_data: Dict[str, Any]) -> Dict[str,
     tmp_state = session_dir / f".state.{secrets.token_hex(4)}.json"
     tmp_meta = session_dir / f".meta.{secrets.token_hex(4)}.json"
     try:
-        tmp_state.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+        tmp_state.write_text(json.dumps(coerced, indent=2), encoding="utf-8")
         os.replace(tmp_state, state_path)
         tmp_meta.write_text(
             json.dumps({"email": norm, "updated_at_utc": _utc_now_iso()}, indent=2),
@@ -140,7 +189,7 @@ def save_flow_session_state(email: str, state_data: Dict[str, Any]) -> Dict[str,
         tmp_state.unlink(missing_ok=True)
         tmp_meta.unlink(missing_ok=True)
 
-    logger.info("Saved Google Flow Playwright session for %s (%d cookies)", norm, len(state_data["cookies"]))
+    logger.info("Saved Google Flow Playwright session for %s (%d cookies)", norm, len(coerced["cookies"]))
     return get_flow_session_info(norm)
 
 
@@ -208,8 +257,45 @@ def _install_network_optimizer(context: Any) -> None:
     context.route("**/*", _route_handler)
 
 
+def _save_debug_snapshot(page: Any, run_id: str) -> str:
+    """Capture non-secret browser state (URL, title, visible controls, screenshot) for diagnostics."""
+    diag_url = ""
+    diag_title = ""
+    try:
+        diag_url = str(page.url or "")
+        diag_title = str(page.title() or "")
+        shot_path = settings.FLOW_JOBS_DIR / f"{run_id}_debug.png"
+        settings.FLOW_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(shot_path), full_page=False)
+        diag_btns = page.evaluate(
+            """() => Array.from(document.querySelectorAll('button,a,[role="button"],textarea,[contenteditable]'))
+                .slice(0, 15)
+                .map(el => (el.tagName + ':' + (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '')).trim().slice(0, 40))"""
+        )
+        logger.warning(
+            "Flow debug snapshot for %s -> url=%s title=%r controls=%s screenshot=%s",
+            run_id, diag_url, diag_title, diag_btns, shot_path.name,
+        )
+    except Exception:
+        pass
+    return f"Page URL: {diag_url or 'unknown'} (Title: {diag_title or 'unknown'})"
+
+
+def _is_about_landing_page(page: Any) -> bool:
+    """Detect whether Playwright landed on the signed-out flow.google.com/about marketing page."""
+    cur_url = (page.url or "").lower()
+    if "/about" in urlparse(cur_url).path:
+        return True
+    try:
+        has_cta = page.get_by_text("Create with Google Flow", exact=False).count() > 0
+        has_editor = page.locator('textarea, [role="textbox"][contenteditable="true"]').count() > 0
+        return has_cta and not has_editor
+    except Exception:
+        return False
+
+
 def _is_auth_or_bot_gate(page: Any) -> Optional[str]:
-    """Detect Google sign-in redirects or human-verification challenges cleanly without bypassing them."""
+    """Detect Google sign-in redirects, signed-out marketing landing, or verification challenges."""
     current_url = (page.url or "").lower()
     if "accounts.google.com" in current_url or "/servicelogin" in current_url:
         return "Redirected to Google Sign-In."
@@ -230,7 +316,49 @@ def _is_auth_or_bot_gate(page: Any) -> Optional[str]:
     for marker in gate_markers:
         if marker in body_text and "generate" not in body_text:
             return f"Authentication or verification prompt detected ('{marker}')."
+
+    if _is_about_landing_page(page):
+        return "Landed on the signed-out Google Flow marketing page (/about)."
     return None
+
+
+def _open_and_enter_flow_studio(page: Any, nav_url: str, active_email: str, is_local_mock: bool) -> None:
+    """Navigate to Google Flow Studio, wait for Angular SPA hydration, and handle /about CTA cleanly."""
+    page.goto(nav_url, wait_until="domcontentloaded", timeout=45000)
+
+    # Wait briefly for SPA hydration / redirect before inspecting DOM
+    try:
+        page.wait_for_selector(
+            'textarea, [role="textbox"][contenteditable="true"], button:has-text("New project"), button:has-text("Create with Google Flow"), span:has-text("Create with Google Flow")',
+            timeout=9000,
+        )
+    except Exception:
+        page.wait_for_timeout(1500)
+
+    if not is_local_mock and _is_about_landing_page(page):
+        # If cookies are actually valid, clicking 'Create with Google Flow' enters the studio; otherwise redirects to Sign-In
+        if _click_first_visible(
+            page,
+            [
+                'button:has-text("Create with Google Flow")',
+                'a:has-text("Create with Google Flow")',
+                'text=Create with Google Flow',
+            ],
+            timeout_ms=3000,
+        ):
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
+    gate_reason = _is_auth_or_bot_gate(page)
+    if gate_reason:
+        raise FlowAuthRequiredError(
+            f"{gate_reason} Session for {active_email} is not signed into Google Flow Studio. "
+            f"Run 'python -m app.flow_login --email {active_email}' and wait until the Flow editor opens before uploading."
+        )
+    _verify_google_account(page, active_email)
 
 
 def _verify_google_account(page: Any, expected_email: str) -> None:
@@ -279,22 +407,27 @@ def _click_first_visible(page: Any, selectors: List[str], timeout_ms: int = 2200
     return False
 
 
-def _fill_first_visible(page: Any, selectors: List[str], value: str, timeout_ms: int = 3000) -> bool:
+def _fill_first_visible(page: Any, selectors: List[str], value: str, timeout_ms: int = 8000) -> bool:
     """Fill or type into the first visible prompt/character editor."""
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            if loc.count() > 0 and loc.is_visible(timeout=min(900, timeout_ms)):
-                loc.click(timeout=timeout_ms)
-                try:
-                    loc.fill(value, timeout=timeout_ms)
-                except Exception:
-                    page.keyboard.press("Control+A")
-                    page.keyboard.press("Backspace")
-                    page.keyboard.insert_text(value)
-                return True
-        except Exception:
-            continue
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while True:
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible(timeout=400):
+                    loc.click(timeout=timeout_ms)
+                    try:
+                        loc.fill(value, timeout=timeout_ms)
+                    except Exception:
+                        page.keyboard.press("Control+A")
+                        page.keyboard.press("Backspace")
+                        page.keyboard.insert_text(value)
+                    return True
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(300)
     return False
 
 
@@ -416,14 +549,17 @@ def _submit_and_wait_scene(
     prompt_selectors = [
         'textarea[data-testid="flow-prompt-input"]',
         'textarea[placeholder*="Describe" i]',
+        'textarea[placeholder*="Generate" i]',
         'textarea[placeholder*="prompt" i]',
         'textarea[aria-label*="prompt" i]',
         'textarea',
         '[role="textbox"][contenteditable="true"]',
+        '[contenteditable="true"]',
     ]
-    if not _fill_first_visible(page, prompt_selectors, prompt_text, timeout_ms=5000):
+    if not _fill_first_visible(page, prompt_selectors, prompt_text, timeout_ms=10000):
+        diag = _save_debug_snapshot(page, f"scene_{scene_num}")
         raise FlowAutomationError(
-            f"Could not locate Google Flow prompt input while sending scene {scene_num}/{total_scenes}."
+            f"Could not locate Google Flow prompt input while sending scene {scene_num}/{total_scenes} ({diag})."
         )
 
     clicked_submit = _click_first_visible(
@@ -586,6 +722,7 @@ def automate_google_flow_run(
     )
 
     session_file = get_session_storage_path(active_email)
+    session_info = get_flow_session_info(active_email)
     is_local_mock_url = urlparse(target_url).hostname in ("127.0.0.1", "localhost", "testserver")
     if not is_local_mock_url and not has_flow_session(active_email):
         msg = (
@@ -597,6 +734,24 @@ def automate_google_flow_run(
             run_id,
             status="auth_required",
             step="session_missing",
+            progress_percent=10,
+            message=msg,
+            error=msg,
+            finished_at_utc=_utc_now_iso(),
+        )
+        raise FlowAuthRequiredError(msg)
+
+    if not is_local_mock_url and not session_info.get("has_auth_cookie"):
+        msg = (
+            f"Saved browser session for '{active_email}' only has {session_info.get('cookie_count', 0)} cookie(s) "
+            f"and is missing Google Sign-In cookies (SID/SAPISID/__Secure-1PSID). "
+            f"Re-run 'python -m app.flow_login --email {active_email} --push-url <your-modal-url>' "
+            f"and sign in completely until the Google Flow Studio workspace opens."
+        )
+        _update_job(
+            run_id,
+            status="auth_required",
+            step="session_incomplete",
             progress_percent=10,
             message=msg,
             error=msg,
@@ -647,14 +802,11 @@ def automate_google_flow_run(
                     progress_percent=18,
                     message=f"Opening Google Flow studio for {active_email}...",
                 )
-                page.goto(nav_url, wait_until="domcontentloaded", timeout=45000)
-
-                gate_reason = _is_auth_or_bot_gate(page)
-                if gate_reason:
-                    raise FlowAuthRequiredError(
-                        f"{gate_reason} Refresh the Google Flow session for {active_email} in a real browser."
-                    )
-                _verify_google_account(page, active_email)
+                try:
+                    _open_and_enter_flow_studio(page, nav_url, active_email, is_local_mock_url)
+                except Exception:
+                    _save_debug_snapshot(page, run_id)
+                    raise
 
                 _update_job(
                     run_id,
@@ -678,13 +830,17 @@ def automate_google_flow_run(
                     prompt_to_send = scene.visual_prompt.strip()
                     if char_names and not any(c.name.lower() in prompt_to_send.lower() for c in pkg.characters):
                         prompt_to_send = f"{prompt_to_send} (Consistent characters: {char_names}; {scene.duration_seconds}s 9:16)"
-                    _submit_and_wait_scene(
-                        page,
-                        scene_num=idx,
-                        total_scenes=total_scenes,
-                        prompt_text=prompt_to_send,
-                        timeout_s=per_scene_timeout,
-                    )
+                    try:
+                        _submit_and_wait_scene(
+                            page,
+                            scene_num=idx,
+                            total_scenes=total_scenes,
+                            prompt_text=prompt_to_send,
+                            timeout_s=per_scene_timeout,
+                        )
+                    except Exception:
+                        _save_debug_snapshot(page, run_id)
+                        raise
 
                 _update_job(
                     run_id,

@@ -813,11 +813,19 @@ async function uploadFlowSessionFile(inputEl) {
     const data = await res.json();
     if (res.ok) {
       const badge = document.getElementById("flowSessionStatusBadge");
+      const valid = Boolean(data.has_auth_cookie);
       if (badge) {
-        badge.className = "badge badge-success";
-        badge.textContent = "Session Ready (" + (data.cookie_count || 0) + " cookies)";
+        badge.className = "badge badge-" + (valid ? "success" : "amber");
+        badge.textContent = valid
+          ? "Session Ready (" + (data.cookie_count || 0) + " cookies)"
+          : "Incomplete Session (" + (data.cookie_count || 0) + " cookies — Missing Google Auth)";
       }
-      showToast("Saved Google Flow session for " + data.email + ".", "success");
+      showToast(
+        valid
+          ? "Saved Google Flow session for " + data.email + "."
+          : "Uploaded " + (data.cookie_count || 0) + " cookie(s), but Google Sign-In cookies are missing. Re-run flow_login until Flow Studio opens.",
+        valid ? "success" : "error"
+      );
     } else {
       showToast("Session upload failed: " + (data.detail || "Invalid JSON"), "error");
     }
@@ -862,6 +870,16 @@ function pollFlowAutomation(runId) {
       if (banner && status !== "idle") {
         const tone = status === "completed" ? "success" : status === "failed" || status === "auth_required" ? "error" : "info";
         renderUploadProgress(banner, job.message || status, status === "running" || status === "queued" ? pct : null, tone);
+        if ((status === "failed" || status === "auth_required") && data.debug_screenshot_url) {
+          const link = document.createElement("a");
+          link.href = data.debug_screenshot_url;
+          link.target = "_blank";
+          link.style.display = "inline-block";
+          link.style.marginTop = "6px";
+          link.style.fontSize = "12px";
+          link.textContent = "Inspect Browser Debug Screenshot";
+          banner.appendChild(link);
+        }
       }
 
       if (data.clips) {

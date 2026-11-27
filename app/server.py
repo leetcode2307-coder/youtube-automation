@@ -704,6 +704,7 @@ def api_get_flow_automate_status(run_id: str):
     missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
     video_exists = (settings.FINAL_OUTPUT_DIR / run_id / "final_short.mp4").exists()
 
+    debug_shot = settings.FLOW_JOBS_DIR / f"{run_id}_debug.png"
     return {
         "job": job.model_dump() if job else {"run_id": run_id, "status": "idle", "progress_percent": 0, "message": ""},
         "clips": mp4_files,
@@ -711,7 +712,18 @@ def api_get_flow_automate_status(run_id: str):
         "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
         "package_status": pkg.status,
         "video_exists": video_exists,
+        "debug_screenshot_url": f"/api/flow-automate/{run_id}/screenshot" if debug_shot.exists() else "",
     }
+
+
+@app.get("/api/flow-automate/{run_id}/screenshot")
+def api_get_flow_debug_screenshot(run_id: str):
+    """Serve diagnostic screenshot from the most recent failed Playwright run."""
+    _validate_run_id(run_id)
+    shot_path = settings.FLOW_JOBS_DIR / f"{run_id}_debug.png"
+    if not shot_path.exists():
+        raise HTTPException(status_code=404, detail="Debug screenshot not found for this run.")
+    return FileResponse(path=str(shot_path), media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/clips/{run_id}")

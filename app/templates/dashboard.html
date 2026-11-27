@@ -218,8 +218,14 @@
                   Submit scene prompts sequentially to <span class="mono">{{ studio_cfg.google_pro_email or 'No email set' }}</span>, download ZIP, extract &amp; rename to <span class="mono">scene_01..0N.mp4</span>.
                 </span>
               </label>
-              <span class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
-                {{ 'Flow Session Ready' if flow_session.has_session else 'Link Session in Settings' }}
+              <span class="badge badge-{{ 'success' if (flow_session.has_session and flow_session.has_auth_cookie) else 'amber' }}">
+                {% if flow_session.has_session and flow_session.has_auth_cookie %}
+                Flow Session Ready
+                {% elif flow_session.has_session %}
+                Session Incomplete (Re-link)
+                {% else %}
+                Link Session in Settings
+                {% endif %}
               </span>
             </div>
           </div>
@@ -515,8 +521,14 @@
                   <div class="flow-bot-box" data-flow-run="{{ p.run_id }}" data-flow-status="{{ item.flow_job.status if item.flow_job else 'idle' }}">
                     <div class="flow-bot-head">
                       <strong style="font-size:12.5px; color:var(--status-info-fg);">Automate in Google Flow (Playwright)</strong>
-                      <span class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
-                        {{ 'Session Ready' if flow_session.has_session else 'Session Needed' }}
+                      <span class="badge badge-{{ 'success' if (flow_session.has_session and flow_session.has_auth_cookie) else 'amber' }}">
+                        {% if flow_session.has_session and flow_session.has_auth_cookie %}
+                        Session Ready
+                        {% elif flow_session.has_session %}
+                        Incomplete ({{ flow_session.cookie_count }} cookies)
+                        {% else %}
+                        Session Needed
+                        {% endif %}
                       </span>
                     </div>
                     <div class="flow-bot-controls">
@@ -529,12 +541,14 @@
                         Send Scenes to Google Flow
                       </button>
                     </div>
-                    <div class="progress-banner" id="flow-job-{{ p.run_id }}"
+                    <div class="progress-banner {{ 'is-error' if item.flow_job and item.flow_job.status in ['failed', 'auth_required'] else ('is-success' if item.flow_job and item.flow_job.status == 'completed' else '') }}" id="flow-job-{{ p.run_id }}"
                          style="margin-top:8px; margin-bottom:0; {{ '' if item.flow_job and item.flow_job.status != 'idle' else 'display:none;' }}"
                          aria-live="polite">
                       {% if item.flow_job and item.flow_job.status != 'idle' %}
                       <div>{{ item.flow_job.message }}</div>
+                      {% if item.flow_job.status in ['queued', 'running'] %}
                       <div class="progress-track"><div class="progress-fill" style="width:{{ item.flow_job.progress_percent }}%;"></div></div>
+                      {% endif %}
                       {% endif %}
                     </div>
                   </div>
@@ -947,11 +961,17 @@
                   <span class="field-hint">Target Google Flow Pro account used when sending scenes via Playwright.</span>
                 </div>
                 <div class="field">
-                  <label>Google Flow Browser Session (`storage_state.json`)</label>
+                  <label>Google Flow Browser Session (<span class="mono">storage_state.json</span>)</label>
                   <div class="flow-session-card">
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                      <span id="flowSessionStatusBadge" class="badge badge-{{ 'success' if flow_session.has_session else 'amber' }}">
-                        {{ 'Session Ready (' ~ flow_session.cookie_count ~ ' cookies)' if flow_session.has_session else 'Session Missing — Link Account' }}
+                      <span id="flowSessionStatusBadge" class="badge badge-{{ 'success' if (flow_session.has_session and flow_session.has_auth_cookie) else 'amber' }}">
+                        {% if flow_session.has_session and flow_session.has_auth_cookie %}
+                        Session Ready ({{ flow_session.cookie_count }} cookies)
+                        {% elif flow_session.has_session %}
+                        Incomplete Session ({{ flow_session.cookie_count }} cookies — Missing Google Auth)
+                        {% else %}
+                        Session Missing — Link Account
+                        {% endif %}
                       </span>
                       <span class="mono" style="color:var(--color-muted-foreground);">{{ flow_session.email or studio_cfg.google_pro_email }}</span>
                     </div>
@@ -961,8 +981,8 @@
                       <button type="button" class="btn btn-danger-outline btn-sm" onclick="clearFlowSession()">Clear Session</button>
                     </div>
                     <div class="field-hint">
-                      Sign in locally once to save &amp; upload your Google Pro session safely:
-                      <code class="mono">python -m app.flow_login --email {{ studio_cfg.google_pro_email }}</code>
+                      Sign in locally once until Flow Studio loads to save &amp; push your session:
+                      <code class="mono">.venv\Scripts\python.exe -m app.flow_login --email {{ studio_cfg.google_pro_email }} --push-url https://leetcode2307-coder--ai-shorts-automation-web.ap-south.modal.run</code>
                     </div>
                   </div>
                 </div>

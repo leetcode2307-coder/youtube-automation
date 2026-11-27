@@ -151,9 +151,30 @@ def test_session_storage_crud_and_secret_hygiene(isolated_env):
         },
     )
     assert info["has_session"] is True
+    assert info["has_auth_cookie"] is True
     assert info["email"] == email
     assert info["cookie_count"] == 1
     assert "TOP_SECRET_COOKIE_123" not in json.dumps(info)
+
+    # Also support Chrome Cookie-Editor array format and detect incomplete anonymous sessions
+    anon_info = fp.save_flow_session_state(
+        email,
+        [{"name": "_ga", "value": "GA1.1.123", "domain": ".flow.google.com", "sameSite": "no_restriction"}],
+    )
+    assert anon_info["has_session"] is True
+    assert anon_info["has_auth_cookie"] is False
+
+    # Incomplete anonymous session (like 3 landing-page cookies) fails fast with actionable auth_required
+    pkg_incomplete = _build_sample_package("20261127_morning_incomplete")
+    storage.save_package(pkg_incomplete)
+    with pytest.raises(fp.FlowAuthRequiredError, match="missing Google Sign-In cookies"):
+        fp.automate_google_flow_run(
+            pkg_incomplete.run_id,
+            google_pro_email=email,
+            flow_url="https://flow.google.com",
+            headless=True,
+        )
+    assert storage.load_flow_job(pkg_incomplete.run_id).step == "session_incomplete"
 
     assert fp.delete_flow_session(email) is True
     assert fp.has_flow_session(email) is False
@@ -283,6 +304,19 @@ def test_playwright_google_flow_end_to_end_system(isolated_env, tmp_path):
             return
 
         def do_GET(self):
+            if self.path.startswith("/about"):
+                html = (
+                    b"<html><body><h1>Google Flow</h1>"
+                    b"<span>Create with Google Flow</span>"
+                    b"<p>Explore Google AI Subscriptions</p></body></html>"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                self.wfile.write(html)
+                return
+
             if self.path.startswith("/auth-gate"):
                 html = b"<html><body><h1>Sign in with Google</h1><p>Verify it's you to continue</p></body></html>"
                 self.send_response(200)
@@ -387,7 +421,19 @@ def test_playwright_google_flow_end_to_end_system(isolated_env, tmp_path):
     try:
         base_url = f"http://127.0.0.1:{port}"
 
-        # 1. Verify Playwright detects auth gate cleanly without attempting bypass
+        # 1. Verify Playwright detects /about marketing page and auth gate without bypassing
+        with pytest.raises(fp.FlowAuthRequiredError, match="marketing page"):
+            fp.automate_google_flow_run(
+                pkg.run_id,
+                google_pro_email="hanumamaruthichenji@gmail.com",
+                flow_url=f"{base_url}/about",
+                headless=True,
+                auto_assemble=False,
+                scene_timeout_s=15,
+            )
+        assert (settings.FLOW_JOBS_DIR / f"{pkg.run_id}_debug.png").exists()
+        assert client.get(f"/api/flow-automate/{pkg.run_id}/screenshot").status_code == 200
+
         with pytest.raises(fp.FlowAuthRequiredError):
             fp.automate_google_flow_run(
                 pkg.run_id,

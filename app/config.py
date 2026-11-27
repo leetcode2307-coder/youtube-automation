@@ -114,7 +114,7 @@ class Settings(BaseSettings):
 
     # Google Flow Playwright Automation
     GOOGLE_PRO_EMAIL: str = "hanumamaruthichenji@gmail.com"
-    GOOGLE_FLOW_URL: str = "https://flow.google"
+    GOOGLE_FLOW_URL: str = "https://flow.google.com"
     FLOW_AUTOMATION_HEADLESS: bool = True
     FLOW_SCENE_TIMEOUT_SECONDS: int = 240
     TOPIC_HISTORY_FILE: Path = Path("data/topic_history.json")
