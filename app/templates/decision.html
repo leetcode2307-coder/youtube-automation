@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version|default('1') }}">
   <script>
     (function () {
@@ -29,7 +29,7 @@
         Run ID: <span class="mono">{{ run_id }}</span>
       </p>
 
-      <div class="next-step-callout" style="text-align:left; border-left-color:{{ '#047857' if decision == 'approved' else '#B91C1C' }};">
+      <div class="next-step-callout" style="text-align:left; border-left-color:{{ 'var(--status-success-fg)' if decision == 'approved' else 'var(--status-danger-fg)' }};">
         {{ message | safe }}
       </div>
 

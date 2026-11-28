@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version|default('1') }}">
   <script>
     (function () {
@@ -124,7 +124,8 @@
           <span class="badge badge-neutral">Niche: {{ studio_cfg.niche }}</span>
           <span class="badge badge-info">Default: {{ studio_cfg.default_privacy_status|capitalize }}</span>
           <button id="themeToggleBtn" type="button" class="btn btn-secondary btn-sm" onclick="toggleTheme()" aria-pressed="false" title="Switch light or dark theme">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
             <span id="themeToggleLabel">Dark Mode</span>
           </button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="window.location.reload()">
@@ -499,38 +500,47 @@
                   </div>
 
                   <!-- Hidden File Inputs Kept Outside Dropzone (prevents click bubbling bugs) -->
-                  <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.zip,.mp3,video/mp4,application/zip,audio/mpeg" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
+                  <input type="file" id="zip-input-{{ p.run_id }}" accept=".zip,application/zip" style="display:none;" onchange="uploadZipForPreview('{{ p.run_id }}', this)">
+                  <input type="file" id="clips-input-{{ p.run_id }}" multiple accept=".mp4,.mp3,video/mp4,audio/mpeg" style="display:none;" onchange="uploadClips('{{ p.run_id }}', this)">
                   <input type="file" id="vo-input-{{ p.run_id }}" accept=".mp3,audio/mpeg" style="display:none;" onchange="uploadVoiceoverFile('{{ p.run_id }}', this)">
 
-                  <!-- Fixed Dropzone + Explicit Pointer Buttons -->
+                  <!-- Fixed ZIP Import Dropzone + Explicit Pointer Buttons -->
                   <div class="drop-zone"
                        id="dropzone-{{ p.run_id }}"
                        tabindex="0"
                        role="button"
-                       aria-label="Upload scene clips or Google Flow ZIP for {{ p.run_id }}"
+                       aria-label="Import Google Flow project ZIP or scene clips for {{ p.run_id }}"
                        ondragenter="handleDragEnter(event)"
                        ondragover="event.preventDefault()"
                        ondragleave="handleDragLeave(event)"
                        ondrop="handleDrop(event, '{{ p.run_id }}')"
-                       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); openClipPicker('{{ p.run_id }}');}"
+                       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); openZipPicker('{{ p.run_id }}');}"
                        onclick="triggerDropzonePick(event, '{{ p.run_id }}')">
                     <div class="drop-zone-icon" aria-hidden="true">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </div>
-                    <div><b>Drop Google Flow ZIP or extracted scene MP4s here</b></div>
+                    <div><b>Drop Google Flow project ZIP (or scene MP4s) to inspect &amp; map</b></div>
                     <div style="font-size:12px; color:var(--color-muted-foreground); margin-top:3px;">
-                      Accepts <span class="mono">.zip</span> project archive or <span class="mono">scene_01.mp4 .. scene_{{ '%02d'|format(p.scenes|length) }}.mp4</span>
-                      {% if studio_cfg.auto_assemble_on_upload %}&bull; Auto-assembles when complete{% endif %}
+                      Generates preview &amp; <span class="mono">scene_01..{{ '%02d'|format(p.scenes|length) }}.mp4</span> mapping before processing; preserves original ZIP &amp; clips.
                     </div>
                     <div class="upload-actions-row">
-                      <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openClipPicker('{{ p.run_id }}')">
-                        Select Clips or ZIP
+                      <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openZipPicker('{{ p.run_id }}')">
+                        Import Flow Project ZIP
+                      </button>
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openClipPicker('{{ p.run_id }}')">
+                        Select Clips (MP4)
                       </button>
                       <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openVoiceoverPicker('{{ p.run_id }}')">
                         Custom Voiceover (.mp3)
                       </button>
                     </div>
                   </div>
+
+                  <!-- ZIP Preview & Mapping Confirmation Panel -->
+                  <div class="zip-preview-panel" id="zip-preview-{{ p.run_id }}" data-zip-run="{{ p.run_id }}" data-scene-count="{{ p.scenes|length }}" style="display:none;" aria-live="polite"></div>
+                  {% if item.zip_import %}
+                  <script type="application/json" id="zip-data-{{ p.run_id }}">{{ item.zip_import | tojson }}</script>
+                  {% endif %}
 
                   <div class="upload-queue-list" id="upload-queue-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
                   <div class="progress-banner" id="progress-{{ p.run_id }}" style="display:none;" aria-live="polite"></div>
@@ -899,7 +909,17 @@
                   <span class="field-hint">Used as optional inspiration whenever you generate new Shorts (can also be overridden or cleared per Short in Overview).</span>
                 </div>
 
-                <div class="settings-group-title">3. Video, Voiceover &amp; YouTube Defaults</div>
+                <div class="settings-group-title">3. Google Flow Manual Chrome &amp; ZIP Import Workflow</div>
+                <div class="field full">
+                  <div class="zip-guide-box">
+                    <b>How Google Flow integrates cleanly (no automated Google login):</b>
+                    1. Open Google Flow (<span class="mono">https://flow.google.com</span>) directly in your normal signed-in Google Chrome browser &bull;
+                    2. Generate scene clips one by one using the Characters &amp; prompts generated here &bull;
+                    3. Download the project <b>.zip</b> archive from Google Flow and import it under <b>Videos &amp; Pipeline &rarr; Import Flow Project ZIP</b> to preview, confirm scene mapping (<span class="mono">scene_01.mp4..</span>), and generate voiceover, captions &amp; vertical video.
+                  </div>
+                </div>
+
+                <div class="settings-group-title">4. Video, Voiceover &amp; YouTube Defaults</div>
                 <div class="field">
                   <label for="cfg-category_id">YouTube Category</label>
                   <select id="cfg-category_id" class="select">
@@ -944,7 +964,7 @@
                   </select>
                 </div>
 
-                <div class="settings-group-title">4. Schedule &amp; Automation Behavior</div>
+                <div class="settings-group-title">5. Schedule &amp; Automation Behavior</div>
                 <div class="field">
                   <label for="cfg-timezone">Schedule Timezone</label>
                   <input id="cfg-timezone" class="input" type="text" value="{{ studio_cfg.timezone }}">

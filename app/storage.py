@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config import settings
 from app.logging_config import logger
-from app.models import ApprovalRecord, ProductionPackage, RunStatus, StudioConfig, UploadRecord
+from app.models import ApprovalRecord, ProductionPackage, RunStatus, StudioConfig, UploadRecord, ZipImportRecord
 
 _LOCK = threading.RLock()
 
@@ -242,6 +242,49 @@ class StorageManager:
             if final_dir.exists():
                 shutil.rmtree(final_dir, ignore_errors=True)
             return existed
+
+    # ---------------- Google Flow Project ZIP Imports ----------------
+
+    def save_zip_import(self, record: ZipImportRecord) -> Path:
+        """Persist ZIP import manifest under FLOW_EXPORTS_DIR/<run_id>/imports/<import_id>/manifest.json."""
+        with _LOCK:
+            import_dir = settings.FLOW_EXPORTS_DIR / record.run_id / "imports" / record.import_id
+            import_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = import_dir / "manifest.json"
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                f.write(record.model_dump_json(indent=2))
+            return manifest_path
+
+    def load_zip_import(self, run_id: str, import_id: str) -> Optional[ZipImportRecord]:
+        """Load a persisted ZIP import manifest by run_id and import_id."""
+        manifest_path = settings.FLOW_EXPORTS_DIR / run_id / "imports" / import_id / "manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                return ZipImportRecord.model_validate(json.load(f))
+        except Exception as exc:
+            logger.warning("Failed to parse ZIP import manifest %s/%s: %s", run_id, import_id, exc)
+            return None
+
+    def list_zip_imports(self, run_id: str) -> List[ZipImportRecord]:
+        """List all persisted ZIP imports for a run_id ordered newest first."""
+        imports_root = settings.FLOW_EXPORTS_DIR / run_id / "imports"
+        if not imports_root.exists():
+            return []
+        records: List[ZipImportRecord] = []
+        for manifest_path in sorted(imports_root.glob("*/manifest.json"), reverse=True):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    records.append(ZipImportRecord.model_validate(json.load(f)))
+            except Exception as exc:
+                logger.warning("Skipping corrupt ZIP manifest %s: %s", manifest_path, exc)
+        return records
+
+    def get_latest_zip_import(self, run_id: str) -> Optional[ZipImportRecord]:
+        """Return the most recent persisted ZIP import manifest for a run."""
+        records = self.list_zip_imports(run_id)
+        return records[0] if records else None
 
 
 storage = StorageManager()

@@ -135,6 +135,50 @@ class StudioConfig(BaseModel):
         return self
 
 
+ZipItemStatus = Literal["valid", "duplicate", "corrupted", "ignored"]
+ZipImportStatus = Literal["preview_ready", "confirmed", "processing", "completed", "failed"]
+
+
+class ZipImportItem(BaseModel):
+    """Single file discovered inside an uploaded Google Flow project ZIP archive."""
+    member_id: str
+    archive_path: str
+    original_filename: str
+    raw_rel_path: str = ""
+    media_kind: Literal["mp4", "voiceover_mp3", "other"] = "mp4"
+    size_bytes: int = 0
+    sha256: str = ""
+    duration_seconds: float = 0.0
+    width: int = 0
+    height: int = 0
+    detected_scene_number: int = -1
+    assigned_scene_number: Optional[int] = None
+    assigned_filename: Optional[str] = None
+    status: ZipItemStatus = "valid"
+    issue: str = ""
+
+
+class ZipImportRecord(BaseModel):
+    """Persistent preview, mapping, preservation, and retry state for a Flow project ZIP import."""
+    import_id: str
+    run_id: str
+    original_zip_filename: str
+    original_zip_rel_path: str
+    zip_sha256: str = ""
+    zip_size_bytes: int = 0
+    status: ZipImportStatus = "preview_ready"
+    total_entries_inspected: int = 0
+    items: List[ZipImportItem] = Field(default_factory=list)
+    missing_scenes: List[int] = Field(default_factory=list)
+    duplicate_scenes: List[int] = Field(default_factory=list)
+    corrupted_files: List[str] = Field(default_factory=list)
+    ignored_files: List[str] = Field(default_factory=list)
+    confirmed_clips: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+    created_at_utc: str = ""
+    updated_at_utc: str = ""
+
+
 class ApprovalRecord(BaseModel):
     approval_id: str
     run_id: str

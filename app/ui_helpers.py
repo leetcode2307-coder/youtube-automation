@@ -223,6 +223,12 @@ def get_system_health(studio_cfg: StudioConfig, active_scheduler: Any = None) ->
 
     return [
         {
+            "name": "Google Flow Workflow",
+            "status": "ZIP Import Ready",
+            "tone": "success",
+            "detail": "Manual Google Flow in your normal Chrome browser -> import project ZIP with preview & scene mapping.",
+        },
+        {
             "name": "AI Script Writer (Groq)",
             "status": "Connected" if groq_ok else "Mock Mode",
             "tone": "success" if groq_ok else "amber",

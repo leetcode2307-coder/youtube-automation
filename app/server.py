@@ -2,14 +2,15 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import html as html_lib
+import json
 import os
 import re
 import secrets
+import shutil
 import sys
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import List, Optional
-import zipfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
@@ -20,7 +21,13 @@ from pydantic import BaseModel, Field
 from app.assemble import assemble_video
 from app.config import LANGUAGE_PROFILES, normalize_language, settings
 from app.emailer import create_approval_record, send_approval_email
-from app.intake import extract_scene_number
+from app.intake import (
+    ZipImportValidationError,
+    apply_zip_mapping_and_stage_clips,
+    extract_and_normalize_flow_archive,
+    extract_scene_number,
+    inspect_and_stage_zip_import,
+)
 from app.logging_config import logger
 from app.models import ApprovalRecord, LanguageType, PrivacyStatus, SlotType, StudioConfig
 from app.pipeline import run_content_pipeline
@@ -270,6 +277,8 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             counts["failed"] += 1
 
         lang_key = normalize_language(p.language)
+        zip_imports = storage.list_zip_imports(p.run_id)
+        latest_zip = zip_imports[0] if zip_imports else None
         item = {
             "pkg": p,
             "niche": p.niche or studio_cfg.niche,
@@ -287,6 +296,8 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             "video_exists": video_exists,
             "is_published": is_published,
             "filter_groups": ",".join(groups),
+            "zip_import": latest_zip.model_dump() if latest_zip else None,
+            "zip_archive_count": len(zip_imports),
         }
         run_items.append(item)
 
@@ -463,97 +474,6 @@ def api_trigger_scheduled(slot: SlotType):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _natural_sort_key(text: str) -> list:
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
-
-
-def _extract_clips_from_zip(zip_path: Path, run_export_dir: Path) -> List[str]:
-    """Safely extract valid .mp4 scene clips and optional voiceover.mp3 from a Google Flow ZIP."""
-    if not zipfile.is_zipfile(zip_path):
-        raise HTTPException(status_code=400, detail=f"Uploaded ZIP '{zip_path.name}' is corrupted or not a valid ZIP archive.")
-
-    max_members = 50
-    max_single_bytes = 250 * 1024 * 1024
-    max_total_bytes = 600 * 1024 * 1024
-    extracted_names: List[str] = []
-    total_extracted = 0
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        valid_infos = []
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            posix_path = PurePosixPath(info.filename.replace("\\", "/"))
-            if "__MACOSX" in posix_path.parts:
-                continue
-            base = posix_path.name
-            if not base or base.startswith("."):
-                continue
-            lower_base = base.lower()
-            if not (lower_base.endswith(".mp4") or lower_base == "voiceover.mp3"):
-                continue
-            if info.file_size < 1024:
-                continue
-            if info.file_size > max_single_bytes:
-                raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeds 250 MB safety limit.")
-            valid_infos.append((info, base, lower_base))
-
-        if not valid_infos:
-            raise HTTPException(
-                status_code=400,
-                detail="ZIP archive contains no valid .mp4 clips (>= 1 KB) or voiceover.mp3.",
-            )
-        if len(valid_infos) > max_members:
-            raise HTTPException(status_code=400, detail=f"ZIP archive contains too many media files ({len(valid_infos)} > {max_members}).")
-
-        vo_infos = [item for item in valid_infos if item[2] == "voiceover.mp3"]
-        mp4_infos = sorted([item for item in valid_infos if item[2].endswith(".mp4")], key=lambda item: _natural_sort_key(item[1]))
-        explicit_nums = {extract_scene_number(base) for _, base, _ in mp4_infos if extract_scene_number(base) > 0}
-        next_auto_idx = 1
-
-        for info, base, lower_base in [*vo_infos, *mp4_infos]:
-            total_extracted += info.file_size
-            if total_extracted > max_total_bytes:
-                raise HTTPException(status_code=400, detail="ZIP archive uncompressed size exceeds 600 MB limit.")
-
-            if lower_base == "voiceover.mp3":
-                dest_name = "voiceover.mp3"
-            else:
-                scene_num = extract_scene_number(base)
-                if scene_num > 0:
-                    dest_name = f"scene_{scene_num:02d}.mp4"
-                else:
-                    while next_auto_idx in explicit_nums:
-                        next_auto_idx += 1
-                    dest_name = f"scene_{next_auto_idx:02d}.mp4"
-                    explicit_nums.add(next_auto_idx)
-                    next_auto_idx += 1
-
-            dest_path = run_export_dir / dest_name
-            tmp_entry = run_export_dir / f".zip.{dest_name}.part.{secrets.token_hex(4)}"
-            try:
-                with zf.open(info, "r") as src, open(tmp_entry, "wb") as dst:
-                    bytes_copied = 0
-                    while True:
-                        chunk = src.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        bytes_copied += len(chunk)
-                        if bytes_copied > max_single_bytes:
-                            raise HTTPException(status_code=400, detail=f"ZIP entry '{base}' exceeded maximum allowed size.")
-                        dst.write(chunk)
-                os.replace(tmp_entry, dest_path)
-                if dest_name == "voiceover.mp3":
-                    (run_export_dir / ".custom_voiceover").write_text("1", encoding="utf-8")
-                    (run_export_dir / ".tts_meta.json").unlink(missing_ok=True)
-                extracted_names.append(dest_name)
-            finally:
-                if tmp_entry.exists():
-                    tmp_entry.unlink(missing_ok=True)
-
-    return sorted(extracted_names)
-
-
 @app.post("/api/upload-clips/{run_id}")
 async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
     """Upload exported Google Flow scene clips (scene_01.mp4..), project .zip, and optional voiceover.mp3."""
@@ -605,11 +525,24 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
             if is_zip:
                 if total_bytes < 22:
                     raise HTTPException(status_code=400, detail=f"ZIP file '{raw_name}' is empty or invalid.")
-                extracted = _extract_clips_from_zip(tmp_path, run_export_dir)
+                archive_preserve_dir = run_export_dir / "imports" / "direct_uploads"
+                archive_preserve_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, archive_preserve_dir / f"{secrets.token_hex(4)}_{raw_name}")
+                try:
+                    extracted = extract_and_normalize_flow_archive(
+                        tmp_path,
+                        run_export_dir,
+                        expected_scene_count=len(pkg.scenes),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 uploaded.extend(extracted)
             else:
                 if total_bytes < 1024:
                     raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
+                archive_preserve_dir = run_export_dir / "imports" / "direct_uploads"
+                archive_preserve_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, archive_preserve_dir / f"{secrets.token_hex(4)}_{raw_name}")
                 target_path = run_export_dir / normalized_name
                 os.replace(tmp_path, target_path)
                 if normalized_name == "voiceover.mp3":
@@ -635,6 +568,250 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
         "found_scenes": sorted(found_numbers),
         "missing_scenes": missing_scenes,
     }
+
+
+# =====================================================================
+# Google Flow Project ZIP Preview, Mapping Confirmation & Retry APIs
+# =====================================================================
+
+class ZipConfirmPayload(BaseModel):
+    import_id: str = Field(min_length=3, max_length=100)
+    mappings: Optional[Dict[str, Optional[int]]] = None
+    allow_partial: bool = False
+    process_video: bool = True
+
+
+class ZipRetryPayload(BaseModel):
+    import_id: Optional[str] = Field(default=None, max_length=100)
+    mappings: Optional[Dict[str, Optional[int]]] = None
+    allow_partial: bool = False
+    process_video: bool = True
+
+
+def _run_confirmed_zip_processing(
+    run_id: str,
+    import_id: str,
+    pkg: Any,
+    request: Optional[Request],
+    *,
+    mappings: Optional[Dict[str, Optional[int]]] = None,
+    allow_partial: bool = False,
+    process_video: bool = True,
+) -> Dict[str, Any]:
+    """Stage confirmed ZIP clips non-destructively and optionally run voiceover + captions + FFmpeg assembly."""
+    record = apply_zip_mapping_and_stage_clips(
+        run_id,
+        import_id,
+        pkg,
+        mappings=mappings,
+        allow_partial=allow_partial,
+    )
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    mp4_files = sorted(
+        f.name for f in run_export_dir.glob("*.mp4") if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
+    )
+
+    review_url = ""
+    assembled = False
+    if process_video and not record.missing_scenes:
+        record.status = "processing"
+        record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+        storage.save_zip_import(record)
+        try:
+            assemble_video(run_id)
+            assembled = True
+            studio_cfg = storage.get_studio_config()
+            raw_token, _ = create_approval_record(run_id)
+            latest_pkg = storage.load_package(run_id) or pkg
+            if studio_cfg.send_email_on_ready:
+                send_approval_email(latest_pkg, raw_token)
+            storage.update_package_status(run_id, "awaiting_approval")
+            base_url = _resolve_base_url(request) if request is not None else ""
+            review_url = f"{base_url}/review/{run_id}?token={raw_token}" if base_url else f"/review/{run_id}?token={raw_token}"
+            record.status = "completed"
+            record.error_message = None
+            record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+            storage.save_zip_import(record)
+        except Exception as exc:
+            record.status = "failed"
+            record.error_message = str(exc)
+            record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+            storage.save_zip_import(record)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video processing failed (original ZIP and clips preserved for retry): {exc}",
+            ) from exc
+
+    return {
+        "status": "success",
+        "run_id": run_id,
+        "import_record": record.model_dump(),
+        "clips": mp4_files,
+        "missing_scenes": record.missing_scenes,
+        "assembled": assembled,
+        "review_url": review_url,
+    }
+
+
+@app.post("/api/zip-import/{run_id}/inspect")
+async def api_inspect_zip_import(run_id: str, file: UploadFile = File(...)):
+    """Upload a Google Flow project .zip, preserve original archive, inspect & preview clip mapping."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    raw_name = Path(file.filename or "flow_export.zip").name
+    if not raw_name.lower().endswith(".zip"):
+        await file.close()
+        raise HTTPException(status_code=400, detail=f"Expected a .zip archive, received '{raw_name}'.")
+
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    run_export_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = run_export_dir / f".upload.{secrets.token_hex(6)}.zip"
+    max_upload_bytes = 500 * 1024 * 1024
+    total_bytes = 0
+
+    try:
+        with open(tmp_path, "wb") as dst:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > max_upload_bytes:
+                    raise HTTPException(status_code=400, detail="ZIP archive exceeds 500 MB upload limit.")
+        if total_bytes < 22:
+            raise HTTPException(status_code=400, detail=f"ZIP archive '{raw_name}' is empty or invalid.")
+
+        try:
+            record = inspect_and_stage_zip_import(
+                run_id,
+                tmp_path,
+                raw_name,
+                pkg,
+            )
+        except ZipImportValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    return {
+        "status": "success",
+        "run_id": run_id,
+        "import_record": record.model_dump(),
+        "expected_scenes": [
+            {"scene_number": s.scene_number, "export_filename": s.export_filename, "duration_seconds": s.duration_seconds}
+            for s in pkg.scenes
+        ],
+    }
+
+
+@app.get("/api/zip-import/{run_id}")
+def api_get_zip_import_status(run_id: str):
+    """Return persisted ZIP import preview/history for a run."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    records = storage.list_zip_imports(run_id)
+    return {
+        "run_id": run_id,
+        "latest": records[0].model_dump() if records else None,
+        "imports": [r.model_dump() for r in records],
+    }
+
+
+@app.post("/api/zip-import/{run_id}/confirm")
+def api_confirm_zip_import(run_id: str, payload: ZipConfirmPayload, request: Request):
+    """Confirm previewed clip-to-scene mapping and trigger voiceover, subtitles, and FFmpeg assembly."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    try:
+        return _run_confirmed_zip_processing(
+            run_id,
+            payload.import_id,
+            pkg,
+            request,
+            mappings=payload.mappings,
+            allow_partial=payload.allow_partial,
+            process_video=payload.process_video,
+        )
+    except ZipImportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/zip-import/{run_id}/retry")
+def api_retry_zip_import(
+    run_id: str,
+    request: Request,
+    payload: Optional[ZipRetryPayload] = Body(default=None),
+):
+    """Retry a previously preserved ZIP import or failed FFmpeg assembly without re-uploading."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    target_rec = (
+        storage.load_zip_import(run_id, payload.import_id)
+        if payload and payload.import_id
+        else storage.get_latest_zip_import(run_id)
+    )
+    if not target_rec:
+        raise HTTPException(status_code=404, detail=f"No preserved ZIP import found to retry for '{run_id}'.")
+
+    preserved_zip = settings.FLOW_EXPORTS_DIR / run_id / target_rec.original_zip_rel_path
+    if not preserved_zip.exists():
+        raise HTTPException(status_code=404, detail="Preserved original ZIP archive was not found.")
+
+    # If earlier inspection failed or raw files are absent, re-inspect preserved ZIP first
+    if not target_rec.items or target_rec.status == "failed" and not target_rec.confirmed_clips:
+        try:
+            refreshed = inspect_and_stage_zip_import(
+                run_id,
+                preserved_zip,
+                target_rec.original_zip_filename,
+                pkg,
+                import_id=target_rec.import_id,
+            )
+        except ZipImportValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if payload and payload.process_video and not refreshed.missing_scenes and not refreshed.duplicate_scenes:
+            return _run_confirmed_zip_processing(
+                run_id,
+                refreshed.import_id,
+                pkg,
+                request,
+                mappings=payload.mappings,
+                allow_partial=payload.allow_partial,
+                process_video=True,
+            )
+        return {
+            "status": "preview_ready",
+            "run_id": run_id,
+            "import_record": refreshed.model_dump(),
+        }
+
+    try:
+        return _run_confirmed_zip_processing(
+            run_id,
+            target_rec.import_id,
+            pkg,
+            request,
+            mappings=payload.mappings if payload else None,
+            allow_partial=payload.allow_partial if payload else False,
+            process_video=payload.process_video if payload else True,
+        )
+    except ZipImportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/clips/{run_id}")

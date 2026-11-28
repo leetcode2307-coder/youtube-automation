@@ -437,7 +437,7 @@ def test_zip_upload_optional_style_memory_and_redesign_ui(test_package):
         zf.writestr("__MACOSX/._scene_01.mp4", b"JUNK" * 500)
         zf.writestr("flow_clip_alpha.mp4", b"CLIP_A_" * 300)
         zf.writestr("nested/scene_2.mp4", b"CLIP_2_" * 300)
-        zf.writestr("../../scene_03.mp4", b"CLIP_3_" * 300)
+        zf.writestr("sub/scene_03.mp4", b"CLIP_3_" * 300)
         zf.writestr("voiceover.mp3", b"CUSTOM_VO_" * 300)
         zf.writestr("README.txt", b"ignored text file")
     buf.seek(0)
@@ -452,6 +452,17 @@ def test_zip_upload_optional_style_memory_and_redesign_ui(test_package):
     assert zip_data["has_custom_voiceover"] is True
     assert (run_export_dir / "scene_01.mp4").exists()
     assert (run_export_dir / "scene_03.mp4").exists()
+    assert list((run_export_dir / "imports" / "direct_uploads").glob("*google_flow_export.zip"))
+
+    # Path traversal ZIP rejected strictly
+    bad_trav = io.BytesIO()
+    with zipfile.ZipFile(bad_trav, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("../../scene_03.mp4", b"EVIL_" * 300)
+    res_trav = client.post(
+        f"/api/upload-clips/{run_id}",
+        files=[("files", ("evil.zip", bad_trav.getvalue(), "application/zip"))],
+    )
+    assert res_trav.status_code == 400
     assert not (run_export_dir.parent / "scene_03.mp4").exists()
 
     # 2. JSON generate body with optional style_examples & remember_style + UI markers
@@ -490,7 +501,8 @@ def test_zip_upload_optional_style_memory_and_redesign_ui(test_package):
     assert "quickStyleExamples" in res_dash.text
     assert "cfg-llm_temperature" in res_dash.text
     assert "cfg-prompt_style_examples" in res_dash.text
-    assert "Select Clips or ZIP" in res_dash.text
+    assert "Import Flow Project ZIP" in res_dash.text
+    assert "zip-preview-" in res_dash.text
     assert "upload-queue-" in res_dash.text
 
     res_css = client.get("/static/styles.css")

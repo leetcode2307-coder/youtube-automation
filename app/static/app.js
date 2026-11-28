@@ -209,6 +209,11 @@ async function generateShort(slot, btnEl) {
   }
 }
 
+function openZipPicker(runId) {
+  const input = document.getElementById("zip-input-" + runId);
+  if (input) input.click();
+}
+
 function openClipPicker(runId) {
   const input = document.getElementById("clips-input-" + runId);
   if (input) input.click();
@@ -221,7 +226,7 @@ function openVoiceoverPicker(runId) {
 
 function triggerDropzonePick(ev, runId) {
   if (ev.target && ev.target.closest("button")) return;
-  openClipPicker(runId);
+  openZipPicker(runId);
 }
 
 function handleDragEnter(ev) {
@@ -245,8 +250,24 @@ function handleDrop(ev, runId) {
   const zone = ev.currentTarget;
   zone.dataset.dragDepth = "0";
   zone.classList.remove("drag-over");
-  if (ev.dataTransfer && ev.dataTransfer.files.length) {
-    uploadFileList(runId, ev.dataTransfer.files);
+  if (!ev.dataTransfer || !ev.dataTransfer.files.length) return;
+
+  const files = Array.from(ev.dataTransfer.files);
+  const zipFile = files.find((f) => f.name.toLowerCase().endsWith(".zip"));
+  if (zipFile) {
+    inspectZipImport(runId, zipFile);
+    const nonZip = files.filter((f) => !f.name.toLowerCase().endsWith(".zip"));
+    if (nonZip.length) uploadFileList(runId, nonZip);
+  } else {
+    uploadFileList(runId, files);
+  }
+}
+
+function uploadZipForPreview(runId, inputEl) {
+  if (inputEl.files && inputEl.files.length) {
+    const file = inputEl.files[0];
+    inputEl.value = "";
+    inspectZipImport(runId, file);
   }
 }
 
@@ -790,12 +811,358 @@ async function refreshLogs() {
   }
 }
 
+function _collectZipMappings(panel) {
+  const mappings = {};
+  panel.querySelectorAll("select[data-zip-member]").forEach((sel) => {
+    const memberId = sel.getAttribute("data-zip-member");
+    if (!memberId) return;
+    const val = sel.value;
+    mappings[memberId] = val ? parseInt(val, 10) : null;
+  });
+  return mappings;
+}
+
+function renderZipPreview(runId, record) {
+  const panel = document.getElementById("zip-preview-" + runId);
+  if (!panel || !record) return;
+
+  const sceneCount = parseInt(panel.getAttribute("data-scene-count") || "5", 10) || 5;
+  panel.style.display = "block";
+  panel.textContent = "";
+
+  // Header
+  const head = document.createElement("div");
+  head.className = "zip-preview-head";
+
+  const titleWrap = document.createElement("div");
+  const strongTitle = document.createElement("strong");
+  strongTitle.style.fontSize = "13px";
+  strongTitle.textContent = "ZIP Preview: " + (record.original_zip_filename || "flow_export.zip");
+  const subMeta = document.createElement("div");
+  subMeta.style.fontSize = "11.5px";
+  subMeta.style.color = "var(--color-muted-foreground)";
+  subMeta.textContent =
+    formatBytesMB(record.zip_size_bytes || 0) +
+    " • Original ZIP & clips preserved • ID: " +
+    (record.import_id || "");
+  titleWrap.appendChild(strongTitle);
+  titleWrap.appendChild(subMeta);
+
+  const statusToneMap = {
+    preview_ready: ["info", "Preview Ready — Confirm Mapping"],
+    confirmed: ["info", "Mapped Clips Staged"],
+    processing: ["info", "Processing Video..."],
+    completed: ["success", "Processed & Ready for Review"],
+    failed: ["danger", "Import / Processing Failed"],
+  };
+  const [tone, labelText] = statusToneMap[record.status] || ["neutral", record.status || "Staged"];
+  const statusBadge = document.createElement("span");
+  statusBadge.className = "badge badge-" + tone;
+  statusBadge.textContent = labelText;
+
+  head.appendChild(titleWrap);
+  head.appendChild(statusBadge);
+  panel.appendChild(head);
+
+  // Error or Duplicate / Missing / Corrupt warnings
+  if (record.error_message) {
+    const errDiv = document.createElement("div");
+    errDiv.className = "alert-error";
+    errDiv.style.marginBottom = "8px";
+    errDiv.textContent = record.error_message;
+    panel.appendChild(errDiv);
+  }
+
+  if (Array.isArray(record.corrupted_files) && record.corrupted_files.length) {
+    const warn = document.createElement("div");
+    warn.className = "alert-error";
+    warn.style.marginBottom = "8px";
+    warn.textContent = "Corrupted clip(s) excluded from mapping: " + record.corrupted_files.join(", ");
+    panel.appendChild(warn);
+  }
+
+  if (Array.isArray(record.duplicate_scenes) && record.duplicate_scenes.length) {
+    const warn = document.createElement("div");
+    warn.className = "progress-banner";
+    warn.style.marginBottom = "8px";
+    warn.textContent =
+      "Duplicate clip(s) detected for Scene(s): " +
+      record.duplicate_scenes.join(", ") +
+      ". Confirm or reassign targets below.";
+    panel.appendChild(warn);
+  }
+
+  if (Array.isArray(record.missing_scenes) && record.missing_scenes.length) {
+    const miss = document.createElement("div");
+    miss.className = "next-step-callout";
+    miss.style.marginBottom = "8px";
+    miss.textContent =
+      "Missing scene(s): " +
+      record.missing_scenes.map((n) => "scene_" + String(n).padStart(2, "0") + ".mp4").join(", ") +
+      ". Save partial mapping or import another ZIP with remaining scenes.";
+    panel.appendChild(miss);
+  }
+
+  // Mapping Rows
+  const list = document.createElement("div");
+  list.className = "zip-mapping-list";
+
+  (record.items || []).forEach((item) => {
+    const row = document.createElement("div");
+    row.className =
+      "zip-mapping-row" +
+      (item.status === "corrupted" ? " is-corrupted" : item.status === "duplicate" ? " is-duplicate" : "");
+
+    const left = document.createElement("div");
+    const nameEl = document.createElement("div");
+    nameEl.className = "mono";
+    nameEl.style.fontWeight = "600";
+    nameEl.textContent = item.original_filename;
+
+    const meta = document.createElement("div");
+    meta.className = "zip-mapping-meta";
+    const metaParts = [formatBytesMB(item.size_bytes || 0)];
+    if (item.media_kind === "mp4" && item.duration_seconds > 0) {
+      metaParts.push(item.duration_seconds.toFixed(1) + "s");
+    }
+    if (item.media_kind === "mp4" && item.width > 0 && item.height > 0) {
+      metaParts.push(item.width + "x" + item.height);
+    }
+    if (item.issue) metaParts.push(item.issue);
+    meta.textContent = metaParts.join(" • ");
+
+    left.appendChild(nameEl);
+    left.appendChild(meta);
+    row.appendChild(left);
+
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.alignItems = "center";
+    right.style.gap = "8px";
+
+    const badge = document.createElement("span");
+    const itemTone = item.status === "valid" ? "success" : item.status === "duplicate" ? "amber" : "danger";
+    badge.className = "badge badge-" + itemTone;
+    badge.textContent = item.status === "valid" ? "Valid" : item.status === "duplicate" ? "Duplicate" : "Corrupted";
+    right.appendChild(badge);
+
+    if (item.media_kind === "mp4") {
+      const sel = document.createElement("select");
+      sel.className = "select zip-map-select mono";
+      sel.setAttribute("data-zip-member", item.member_id);
+      sel.setAttribute("aria-label", "Map " + item.original_filename + " to scene");
+      if (item.status === "corrupted") sel.disabled = true;
+
+      const skipOpt = document.createElement("option");
+      skipOpt.value = "";
+      skipOpt.textContent = "Skip (Do not map)";
+      sel.appendChild(skipOpt);
+
+      for (let s = 1; s <= Math.max(sceneCount, item.assigned_scene_number || 0); s++) {
+        const opt = document.createElement("option");
+        opt.value = String(s);
+        opt.textContent = "-> scene_" + String(s).padStart(2, "0") + ".mp4";
+        if (item.assigned_scene_number === s) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      right.appendChild(sel);
+    }
+
+    row.appendChild(right);
+    list.appendChild(row);
+  });
+
+  panel.appendChild(list);
+
+  // Action Buttons Row
+  const actions = document.createElement("div");
+  actions.className = "btn-group";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.type = "button";
+  confirmBtn.className = "btn btn-primary btn-sm";
+  confirmBtn.textContent = "Confirm Mapping & Process Video";
+  confirmBtn.onclick = () => confirmZipImport(runId, record.import_id, true, false, confirmBtn);
+  actions.appendChild(confirmBtn);
+
+  const partialBtn = document.createElement("button");
+  partialBtn.type = "button";
+  partialBtn.className = "btn btn-secondary btn-sm";
+  partialBtn.textContent = "Save Mapped Clips Only";
+  partialBtn.onclick = () => confirmZipImport(runId, record.import_id, false, true, partialBtn);
+  actions.appendChild(partialBtn);
+
+  if (record.status === "failed" || record.status === "confirmed") {
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "btn btn-accent btn-sm";
+    retryBtn.textContent = "Retry Failed Import";
+    retryBtn.onclick = () => retryZipImport(runId, record.import_id, retryBtn);
+    actions.appendChild(retryBtn);
+  }
+
+  panel.appendChild(actions);
+}
+
+async function inspectZipImport(runId, file) {
+  if (!file) return;
+  const banner = document.getElementById("progress-" + runId);
+  if (!file.name.toLowerCase().endsWith(".zip") || file.size < 22) {
+    const msg = "Please select a valid .zip project archive exported from Google Flow.";
+    renderUploadProgress(banner, msg, null, "error");
+    showToast(msg, "error");
+    return;
+  }
+
+  renderUploadProgress(banner, "Validating & inspecting ZIP archive (" + file.name + ")...", 45, "info");
+  showToast("Validating Google Flow ZIP for preview...");
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch("/api/zip-import/" + encodeURIComponent(runId) + "/inspect", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = "ZIP validation failed: " + (data.detail || "Invalid or corrupted archive");
+      renderUploadProgress(banner, msg, null, "error");
+      showToast(msg, "error");
+      return;
+    }
+
+    renderZipPreview(runId, data.import_record);
+    renderUploadProgress(banner, "ZIP validated. Review the scene mapping below and confirm to process.", 100, "success");
+    showToast("ZIP preview ready — confirm scene mapping to process video.", "success");
+  } catch (err) {
+    const msg = "ZIP inspection error: " + (err?.message || err);
+    renderUploadProgress(banner, msg, null, "error");
+    showToast(msg, "error");
+  }
+}
+
+async function confirmZipImport(runId, importId, processVideo = true, allowPartial = false, btnEl = null) {
+  const panel = document.getElementById("zip-preview-" + runId);
+  const banner = document.getElementById("progress-" + runId);
+  const mappings = panel ? _collectZipMappings(panel) : null;
+
+  setBtnBusy(btnEl, true, processVideo ? "Processing Short..." : "Saving Clips...");
+  renderUploadProgress(
+    banner,
+    processVideo
+      ? "Staging mapped clips, generating AI voiceover & captions, and assembling 9:16 video..."
+      : "Staging mapped clips (preserving original ZIP & raw clips)...",
+    null,
+    "info"
+  );
+  try {
+    const res = await fetch("/api/zip-import/" + encodeURIComponent(runId) + "/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        import_id: importId,
+        mappings,
+        allow_partial: allowPartial,
+        process_video: processVideo,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = data.detail || "Could not confirm ZIP mapping";
+      renderUploadProgress(banner, msg, null, "error");
+      showToast(msg, "error");
+      if (data.import_record) renderZipPreview(runId, data.import_record);
+      else {
+        const latestRes = await fetch("/api/zip-import/" + encodeURIComponent(runId));
+        const latestData = await latestRes.json();
+        if (latestData.latest) renderZipPreview(runId, latestData.latest);
+      }
+      return;
+    }
+
+    if (data.import_record) renderZipPreview(runId, data.import_record);
+    refreshRunClipsUi(runId, { clips: data.clips || [], has_custom_voiceover: false });
+
+    if (data.assembled && AUTO_OPEN_REVIEW && data.review_url) {
+      renderUploadProgress(banner, "Video assembled and validated! Opening review screen...", 100, "success");
+      showToast("Video ready! Opening Review...", "success");
+      window.location.assign(data.review_url);
+      return;
+    }
+
+    renderUploadProgress(
+      banner,
+      data.assembled ? "Video assembled and validated!" : "Mapped clips saved cleanly.",
+      100,
+      "success"
+    );
+    showToast(data.assembled ? "Video assembled successfully!" : "Mapped clips staged.", "success");
+    if (data.assembled) setTimeout(() => window.location.reload(), 900);
+  } catch (err) {
+    const msg = "ZIP processing failed: " + (err?.message || err);
+    renderUploadProgress(banner, msg, null, "error");
+    showToast(msg, "error");
+  } finally {
+    setBtnBusy(btnEl, false);
+  }
+}
+
+async function retryZipImport(runId, importId, btnEl = null) {
+  const panel = document.getElementById("zip-preview-" + runId);
+  const banner = document.getElementById("progress-" + runId);
+  const mappings = panel ? _collectZipMappings(panel) : null;
+
+  setBtnBusy(btnEl, true, "Retrying...");
+  renderUploadProgress(banner, "Retrying preserved ZIP import & video processing...", null, "info");
+  try {
+    const res = await fetch("/api/zip-import/" + encodeURIComponent(runId) + "/retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ import_id: importId || null, mappings, process_video: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = data.detail || "Retry failed";
+      renderUploadProgress(banner, msg, null, "error");
+      showToast(msg, "error");
+      return;
+    }
+    if (data.import_record) renderZipPreview(runId, data.import_record);
+    if (data.assembled && AUTO_OPEN_REVIEW && data.review_url) {
+      window.location.assign(data.review_url);
+      return;
+    }
+    if (data.assembled) {
+      showToast("Retry succeeded! Video ready.", "success");
+      setTimeout(() => window.location.reload(), 900);
+    } else {
+      showToast("ZIP re-validated and ready to confirm.", "success");
+    }
+  } catch (err) {
+    renderUploadProgress(banner, "Retry error: " + err, null, "error");
+    showToast("Retry error: " + err, "error");
+  } finally {
+    setBtnBusy(btnEl, false);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(getPreferredTheme());
   const initialHash = window.location.hash.replace("#", "");
   if (initialHash && SECTION_TITLES[initialHash]) {
     navigateTo(initialHash, false);
   }
+  document.querySelectorAll("[data-zip-run]").forEach((panel) => {
+    const runId = panel.getAttribute("data-zip-run");
+    const jsonEl = document.getElementById("zip-data-" + runId);
+    if (runId && jsonEl) {
+      try {
+        const rec = JSON.parse(jsonEl.textContent || "null");
+        if (rec) renderZipPreview(runId, rec);
+      } catch (_e) {}
+    }
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       closeModal();
