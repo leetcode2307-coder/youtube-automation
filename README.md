@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/cd1a09e1-dc2e-4b0a-a806-fbb8942c6611
+
 # YouTube Shorts Studio & Automation System
 
 A human-in-the-loop **YouTube Shorts Studio & Production Pipeline** built with **FastAPI**, **LangGraph**, **Groq**, **Edge-TTS**, **FFmpeg**, **APScheduler**, and **YouTube Data API v3**. It automates topic discovery, scriptwriting, consistent character sheets, Google Flow Omni scene prompts, safe project ZIP import & clip mapping, 9:16 vertical video assembly, token-gated human review, and idempotent YouTube publishing across any niche and five supported languages.
