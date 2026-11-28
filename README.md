@@ -1,213 +1,274 @@
-# AI Engineering YouTube Shorts Automation System
+# YouTube Shorts Studio & Automation System
 
-An automated, human-in-the-loop production pipeline designed to generate, assemble, review, and publish two high-retention English YouTube Shorts per day for an AI Engineering channel.
-
-## 🚀 Key Features
-
-- **Daily Dual Scheduling**: Runs every day at **07:00 AM IST** (Morning) and **04:30 PM IST** (Evening) using `APScheduler` in `Asia/Kolkata` timezone.
-- **AI Orchestration with LangGraph & Groq**: Powered by `llama-3.3-70b-versatile` via `langchain-groq` and LangGraph `StateGraph`, generating hook-driven scripts, scene breakdowns (30–45s), visual prompts, and SEO metadata.
-- **Anti-Duplication Protection**: Persistent `topic_history.json` prevents duplicate topics across runs.
-- **Google Flow Handoff**: Generates a dedicated `FLOW_PROMPTS.txt` with scene-by-scene prompts formatted for 9:16 vertical video creation in Google Flow under Google AI Pro. Strictly manual export/import boundary (no brittle browser scraping or private APIs).
-- **Automated FFmpeg Assembly**:
-  - Concatenates scene clips in strict numerical order (`scene_01.mp4`, `scene_02.mp4`, etc.).
-  - Normalizes to **1080x1920 (9:16 portrait)**, 30 FPS, H.264 video (`yuv420p`), AAC audio.
-  - Automatically generates synchronized neural voiceover and subtitles via `Edge-TTS` (with support for manual recorded voiceover overrides).
-  - Validates output dimensions, duration bounds (30–45s), and computes SHA-256 integrity checksum.
-- **Secure Email Approval Gate**:
-  - Delivers an HTML review notification via SMTP with video metadata and breakdown.
-  - **Single-use, cryptographically secure 32-byte tokens** stored as SHA-256 hashes with 24-hour expiration.
-  - Anti-scanner protection: GET requests only open the web review portal. Approval requires an explicit interactive POST action, preventing email scanners (e.g. Outlook Safelinks, Gmail prefetchers) from auto-uploading.
-- **Private YouTube Publishing & Upload Idempotency**:
-  - Authorized via YouTube Data API v3 OAuth.
-  - All videos are published strictly as **Private** initially.
-  - Includes synthetic media disclosure flags and full SEO tags/descriptions.
-  - Guarded by `upload_ledger.json`—re-approval or retry requests safely return the existing YouTube video ID without creating duplicate uploads.
+A human-in-the-loop **YouTube Shorts Studio & Production Pipeline** built with **FastAPI**, **LangGraph**, **Groq**, **Edge-TTS**, **FFmpeg**, **APScheduler**, and **YouTube Data API v3**. It automates topic discovery, scriptwriting, consistent character sheets, Google Flow Omni scene prompts, safe project ZIP import & clip mapping, 9:16 vertical video assembly, token-gated human review, and idempotent YouTube publishing across any niche and five supported languages.
 
 ---
 
-## 🛠️ Architecture Overview
+## Key Features
+
+- **Multi-Niche & Multi-Language Studio**:
+  - Configurable for any content niche (default preset: `AI Engineering Shorts Studio`), audience tone, call-to-action, and YouTube category directly from the Web UI or `.env`.
+  - Native script, voiceover, and SEO metadata support for **English**, **Telugu (`తెలుగు`)**, **Hindi (`हिन्दी`)**, **Tamil (`தமிழ்`)**, and **Malayalam (`മലയാളം`)**, with automatic locale-matched Edge-TTS voice resolution.
+- **Resilient LangGraph + Groq Content Pipeline**:
+  - 6-node LangGraph `StateGraph` (`select_topic` → `research_topic` → `draft_script` → `generate_metadata` → `create_flow_prompts` → `validate_package`) with automatic validation retries (up to `MAX_RETRIES`).
+  - Persistent `topic_history.json` prevents duplicate topics across runs.
+  - Configurable `llm_temperature` (`0.0–1.5`, default `0.9`), optional **Style & Description Memory** (`prompt_style_examples` + UI presets), and automatic `MockLLM` fallback for offline dry runs (`--mock` or unconfigured API key).
+  - Structured output resilience (`json_mode` first, `<think>`/code-fence/XML `<parameter=...>` JSON recovery, Qwen output-token capping, and fallback model chain across `llama-3.3-70b-versatile` and `llama-3.1-8b-instant`).
+- **Google Flow Omni Prompts & Safe Project ZIP Import**:
+  - Generates 1–3 recurring `CharacterProfile` definitions and 3–8 sequential **8–15s** 9:16 vertical prompts in `data/flow_exports/<run_id>/FLOW_PROMPTS.txt` for **Google Flow (Google AI Pro)** in your standard Chrome browser (no brittle browser automation or credential scraping).
+  - **Inspect → Preview → Confirm → Retry ZIP Workflow**:
+    - Pre-extraction security and integrity checks (`zipfile.testzip()` CRC verification, path traversal / drive-letter / null-byte / POSIX symlink rejection, `__MACOSX` and dotfile filtering, size and member limits).
+    - `ffprobe` validation on every extracted `.mp4`, deterministic sorting, duplicate clip detection (by scene slot or SHA-256), corrupted/missing clip reporting, interactive mapping overrides, partial staging, non-destructive preservation of original `.zip` + `raw/` clips, and one-click retry without re-uploading.
+    - Also supports parallel multi-file XHR uploads (`scene_01.mp4..`, `.zip`, or custom `voiceover.mp3`).
+- **Automated FFmpeg 9:16 Assembly & Audio Modes**:
+  - Normalizes heterogeneous scene clips to **1080×1920 (9:16 portrait)**, 30 FPS, H.264 (`yuv420p`), AAC 192k (`+faststart`) with SHA-256 checksum (`final_short.sha256`).
+  - Three configurable audio modes: `ai_voiceover` (default neural `Edge-TTS` + WordBoundary `captions.srt`), `ai_plus_clip_audio` (voiceover mixed with 20% original clip audio), and `clip_audio_only` (falls back to AI voiceover if clips lack audio). Automatically pads video (`tpad=stop_mode=clone`) if voiceover exceeds clip length within bounds, and preserves custom uploaded `voiceover.mp3`.
+- **Sage & Cream Web Studio Dashboard**:
+  - Responsive light/dark UI (`/` and `/dashboard`) with 6 workspaces: **Overview**, **Videos & Pipeline**, **Publishing Ledger**, **Schedule**, **Activity & Logs** (live redacted log viewer), and **Settings & Health**.
+  - Inline metadata, narration, category, visibility, and AI-disclosure editor, plus byte-range video streaming (`/video/{run_id}`).
+- **Token-Gated Review & Idempotent YouTube Publishing**:
+  - Single-use 32-byte URL-safe tokens stored as SHA-256 hashes with configurable expiration (`24h` default).
+  - Anti-scanner design: `GET /review/{run_id}` only renders the preview portal; publishing requires an explicit interactive `POST /approve/{run_id}` (or `POST /reject/{run_id}`), returning `409 Conflict` on replay and `410 Gone` on expiry.
+  - Supports **Private** (default), **Unlisted**, or **Public** visibility, `containsSyntheticMedia` disclosure, `upload_ledger.json` duplicate-upload idempotency, and automatic post-publish cleanup of intermediate `scene_xx.mp4` clips while retaining `final_short.mp4`, `captions.srt`, and preserved ZIP imports.
+
+---
+
+## Architecture Overview
 
 ```mermaid
 flowchart TD
-    Scheduler[APScheduler - Asia/Kolkata<br>07:00 AM & 04:30 PM] -->|Trigger Slot| Pipeline[Pipeline Service]
-    Pipeline --> LangGraph[LangGraph StateGraph]
-    LangGraph -->|Topic & Script| Groq[Groq Llama 3.3 70B]
-    Groq --> FlowBrief[FLOW_PROMPTS.txt Brief]
-    FlowBrief -->|Manual Generation| Flow[Google Flow - Google AI Pro]
-    Flow -->|Export Clips| AssetIntake[Asset Intake Validator]
-    AssetIntake --> TTS[Edge-TTS Audio & Subtitles]
-    TTS --> FFmpeg[FFmpeg 1080x1920 Assembly Engine]
-    FFmpeg --> Validator[Media Duration & Codec Validator]
-    Validator --> Server[FastAPI Webhook & SMTP Emailer]
-    Server -->|Review Email| Approver[Channel Operator]
-    Approver -->|Interactive Review Portal| ReviewGate[GET /review - View Video & Metadata]
-    ReviewGate -->|Explicit POST Action| ApproveGate[POST /approve - One-Time Token]
-    ApproveGate --> YouTube[YouTube Data API v3 - Private Upload]
-    YouTube --> Ledger[(Upload Ledger - Idempotency)]
+    Trigger["APScheduler / Web Studio / CLI"] -->|Trigger Slot| Pipeline["Pipeline Runner (app/pipeline.py)"]
+    Pipeline --> Graph["LangGraph StateGraph (app/graph.py)"]
+    Graph -->|Structured JSON + Fallbacks| Groq["Groq LLM / MockLLM (app/llm.py)"]
+    Groq --> Brief["Character Sheet & FLOW_PROMPTS.txt"]
+    Brief -->|Manual Chrome Generation| Flow["Google Flow Omni (9:16, 8-15s)"]
+    Flow -->|Project ZIP or MP4s| Intake["ZIP Inspect & Mapping Validator (app/intake.py)"]
+    Intake -->|Confirmed Clips| TTS["Edge-TTS Voiceover & SRT (app/tts.py)"]
+    TTS --> FFmpeg["FFmpeg 1080x1920 Engine (app/assemble.py)"]
+    FFmpeg --> MediaVal["FFprobe Media Validator (app/media_validator.py)"]
+    MediaVal --> Server["FastAPI Portal & SMTP Emailer (app/server.py)"]
+    Server -->|Review Email / Direct Link| Operator["Channel Operator"]
+    Operator -->|GET /review| ReviewGate["Review Portal (Preview & Metadata)"]
+    ReviewGate -->|POST /approve| YouTube["YouTube Data API v3 (app/youtube.py)"]
+    YouTube --> Ledger["Upload Ledger (Idempotency) & Clip Cleanup"]
 ```
 
 ---
 
-## 📋 Prerequisites
+## Project Structure
 
-1. **Python 3.11+** (Windows, Linux, or macOS).
-2. **FFmpeg & FFprobe**:
-   - Installed and available on system `PATH` (on Windows: `winget install Gyan.FFmpeg`).
-3. **Groq API Key**:
-   - Get your free/pay-as-you-go key from [console.groq.com](https://console.groq.com).
-4. **Google AI Pro (Google Flow)**:
-   - For generating scene video clips.
-5. **Google Cloud Project with YouTube Data API v3**:
-   - OAuth 2.0 Desktop Application credentials saved as `client_secret.json`.
-6. **SMTP Email Account**:
-   - For delivery of approval notifications (e.g. Gmail with an App Password).
+```text
+youtube-automation/
+├── cli.py                      # Unified CLI (generate, assemble, notify, serve, youtube-auth, schedule, status, test-tts)
+├── modal_app.py                # Modal serverless web app, persistent volume sync, and cron functions
+├── Dockerfile                  # Python 3.11 + FFmpeg container image honoring $PORT
+├── docker-compose.yml          # Multi-service stack (approval-service + scheduler-service)
+├── render.yaml                 # Render Blueprint configuration
+├── requirements.txt            # Python dependencies
+├── pytest.ini                  # Pytest configuration
+├── .env.example                # Environment variable template
+├── OPERATIONAL_RUNBOOK.md      # Daily operator step-by-step runbook & OAuth guide
+├── app/
+│   ├── config.py               # Pydantic settings, language profiles, and TTS locale resolver
+│   ├── models.py               # Domain schemas (ProductionPackage, StudioConfig, ZipImportRecord, ApprovalRecord, UploadRecord)
+│   ├── llm.py                  # ChatGroq factory, MockLLM, JSON-mode/XML recovery, fallback models
+│   ├── graph.py                # LangGraph workflow nodes & validation retry routing
+│   ├── pipeline.py             # End-to-end content generation orchestration & FLOW_PROMPTS.txt writer
+│   ├── intake.py               # ZIP security validation, FFprobe inspection, scene mapping & asset intake
+│   ├── tts.py                  # Edge-TTS speech & WordBoundary SRT subtitle generator
+│   ├── assemble.py             # FFmpeg 1080x1920 normalization, audio mixing, tpad, and SHA-256 hashing
+│   ├── media_validator.py      # FFprobe validation for resolution, streams, and duration bounds
+│   ├── storage.py              # Thread-safe JSON persistence (packages, history, approvals, ledger, settings, ZIP manifests)
+│   ├── emailer.py              # Single-use token generation & HTML/text SMTP approval notifications
+│   ├── youtube.py              # YouTube Data API v3 OAuth loader, resumable upload, idempotency, clip cleanup
+│   ├── scheduler.py            # APScheduler daily morning/evening cron configuration
+│   ├── server.py               # FastAPI web dashboard, ZIP import/upload APIs, video streaming, review gate
+│   ├── ui_helpers.py           # Dashboard health checks, plain-English error explanations, timeline & ledger builders
+│   ├── logging_config.py       # Console + file logging with automatic secret redaction
+│   ├── templates/              # Jinja2 templates (dashboard.html, review.html, decision.html)
+│   └── static/                 # Frontend assets (app.js, styles.css, favicon.svg)
+├── tests/                      # Offline automated test suite (37 tests)
+└── data/                       # Local runtime storage (packages/, flow_exports/, final/, *.json)
+```
 
 ---
 
-## ⚙️ Installation & Setup
+## Prerequisites
 
-1. **Activate the virtual environment**:
+1. **Python 3.11+** (Windows, macOS, or Linux)
+2. **FFmpeg & FFprobe** installed and available on system `PATH` (e.g., `winget install Gyan.FFmpeg` on Windows or `apt-get install ffmpeg` on Debian/Ubuntu)
+3. **Groq API Key** from [console.groq.com](https://console.groq.com) *(optional for offline `--mock` dry runs)*
+4. **Google Flow (Google AI Pro)** via your regular Chrome browser for rendering 9:16 scene clips
+5. **Google Cloud Project with YouTube Data API v3** *(optional; omit credentials to run in safe mock upload mode)*
+6. **SMTP Credentials** *(optional; omit to log review links in dry-run mode and open them from the Web Studio)*
+
+---
+
+## Quick Start (Local)
+
+1. **Create and activate a virtual environment**:
    ```powershell
+   python -m venv .venv
    .venv\Scripts\Activate.ps1
    ```
+   *(On macOS/Linux: `source .venv/bin/activate`)*
 
-2. **Configure Environment Variables**:
-   Copy `.env.example` to `.env` and fill in your credentials:
+2. **Install dependencies**:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables**:
    ```powershell
    Copy-Item .env.example .env
    ```
-   Key configuration variables in `.env`:
-   ```ini
-   GROQ_API_KEY=gsk_your_groq_api_key_here
-   GROQ_MODEL=llama-3.3-70b-versatile
-   APPROVAL_RECIPIENT_EMAIL=your_email@gmail.com
-   SMTP_USERNAME=your_email@gmail.com
-   SMTP_PASSWORD=your_gmail_app_password
-   TIMEZONE=Asia/Kolkata
-   ```
+   Edit `.env` with your `GROQ_API_KEY`, `APPROVAL_SECRET_KEY`, and optional SMTP/YouTube settings.
 
-3. **Verify Installation**:
-   Run the test suite to ensure all dependencies and FFmpeg are functioning:
+4. **Verify installation with the offline test suite**:
    ```powershell
    python -m pytest -v
    ```
 
----
+5. **Launch the Web Studio & Review Portal**:
+   ```powershell
+   python cli.py serve
+   ```
+   Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 
-## 💻 CLI Usage Guide
-
-The unified CLI (`cli.py`) controls all pipeline stages:
-
-### 1. Generate a Content Package & Flow Brief
-Generate a topic, script, metadata, and Flow prompts for a specific slot:
-```powershell
-python cli.py generate --slot morning
-# Or evening:
-python cli.py generate --slot evening
-```
-*Outputs: `data/packages/<run_id>.json` and `data/flow_exports/<run_id>/FLOW_PROMPTS.txt`.*
-
-### 2. Assemble Exported Google Flow Clips
-After exporting `scene_01.mp4`..`scene_0N.mp4` from Google Flow into `data/flow_exports/<run_id>/`:
-```powershell
-python cli.py assemble --run-id <run_id>
-```
-*Standardizes clips to 1080x1920 9:16 portrait, synthesizes voiceover and subtitles, and verifies duration (30-45s).*
-
-### 3. Send Approval Request
-Generate an expiring single-use token and email the review invitation:
-```powershell
-python cli.py notify --run-id <run_id>
-```
-
-### 4. Run the Approval Web Service
-Start the FastAPI review server to preview and approve videos:
-```powershell
-python cli.py serve
-```
-*Visit `http://127.0.0.1:8000/review/<run_id>?token=<token>` to review the video and authorize upload.*
-
-### 5. Start Daily Scheduler Daemon
-Run the APScheduler background runner that automatically triggers morning (07:00 IST) and evening (16:30 IST) pipelines:
-```powershell
-python cli.py schedule
-```
-
-### 6. Inspect System Status
-Check recent production runs, topic history, and upload records:
-```powershell
-python cli.py status
-```
+6. *(Optional)* **Authorize YouTube OAuth locally**:
+   Place your Desktop App OAuth JSON at `client_secret.json` and run:
+   ```powershell
+   python cli.py youtube-auth
+   ```
+   This saves `token.json` for local, Docker, Render, or Modal uploads.
 
 ---
 
-## 🐳 Running with Docker & Docker Compose
+## Studio Workflow
 
-The system is fully containerized with FFmpeg, Python 3.11, and `Asia/Kolkata` timezone configured.
+1. **Generate a Short Brief**: In the **Overview** tab (or via `python cli.py generate`), pick a niche, language, optional topic, and optional style memory examples. The pipeline produces `data/packages/<run_id>.json` and `data/flow_exports/<run_id>/FLOW_PROMPTS.txt`.
+2. **Render in Google Flow**: Open [https://flow.google.com](https://flow.google.com) in your normal signed-in Chrome browser, register the generated **Characters** first for visual consistency, generate each **8–15s Omni** 9:16 scene clip, and download the project `.zip` (or individual `.mp4` files).
+3. **Import ZIP & Confirm Scene Mapping**: Drag and drop the `.zip` into the run's **Upload Station** (`Import Flow Project ZIP`). Inspect the detected durations/resolutions, resolve any duplicate or missing scenes, and click **Confirm Mapping & Process Video**. Original `.zip` and raw clips stay preserved under `data/flow_exports/<run_id>/imports/` for one-click retry if assembly fails.
+4. **Review & Publish**: Preview the 1080×1920 MP4 in the **Review & Approval Gate** (`/review/<run_id>?token=...`), adjust title, visibility (`private`, `unlisted`, or `public`), or AI-content disclosure if needed, and submit **Approve & Upload to YouTube**.
 
-### 1. Start All Background Services
-Launch both the **FastAPI Approval Portal** and **APScheduler Service** in detached mode:
+---
+
+## CLI Reference
+
+`cli.py` exposes every pipeline operation:
+
+| Command | Description |
+| :--- | :--- |
+| `python cli.py generate --slot morning [--mock]` | Run LangGraph content generation for `morning` or `evening` (`--mock` skips live Groq API). |
+| `python cli.py assemble --run-id <run_id>` | Validate clips, synthesize Edge-TTS + SRT (unless custom `voiceover.mp3` exists), assemble 1080×1920 MP4, and validate media. |
+| `python cli.py notify --run-id <run_id>` | Generate a single-use 24h approval token and send the review email (or log the URL in dry-run mode). |
+| `python cli.py serve [--host 127.0.0.1] [--port 8000]` | Start the FastAPI Studio Dashboard & Review Portal (honors `$PORT` in cloud environments). |
+| `python cli.py youtube-auth` | Run interactive local browser OAuth flow using `client_secret.json` and save `token.json`. |
+| `python cli.py schedule` | Run standalone APScheduler daemon using persisted `morning_cron`, `evening_cron`, and `timezone`. |
+| `python cli.py status` | Print recent production packages, topic history, and upload ledger entries. |
+| `python cli.py test-tts` | Smoke-test Edge-TTS audio and `.srt` subtitle output (`data/final/test_tts.mp3`). |
+
+---
+
+## API Overview
+
+| Method & Endpoint | Purpose |
+| :--- | :--- |
+| `GET /`, `GET /dashboard` | Render the Studio Dashboard UI (`HEAD` supported for probes). |
+| `GET /health` | Health check returning status, scheduler mode, timezone, and active niche. |
+| `GET /api/settings`, `POST /api/settings` | Read or persist `StudioConfig` (live-updates embedded APScheduler when running). |
+| `POST /api/generate`, `POST /api/trigger-scheduled/{slot}` | Trigger content generation with optional niche, language, topic, temperature, and style memory. |
+| `POST /api/package/{run_id}`, `DELETE /api/package/{run_id}` | Edit title/description/tags/hashtags/narration/privacy/disclosure or delete a run. |
+| `GET /api/brief/{run_id}` | Retrieve plain-text `FLOW_PROMPTS.txt` for a run. |
+| `POST /api/zip-import/{run_id}/inspect` | Upload & validate a Flow `.zip`, probe clips, detect duplicates/missing scenes, and persist preview manifest. |
+| `GET /api/zip-import/{run_id}` | Fetch persisted ZIP import previews/history for a run. |
+| `POST /api/zip-import/{run_id}/confirm` | Confirm scene mappings, stage clips non-destructively, and optionally run assembly + review prep. |
+| `POST /api/zip-import/{run_id}/retry` | Retry a preserved ZIP import or failed assembly without re-uploading. |
+| `POST /api/upload-clips/{run_id}`, `GET /api/clips/{run_id}` | Upload/list individual `scene_01.mp4..`, `.zip`, or `voiceover.mp3` assets. |
+| `POST /api/assemble/{run_id}`, `POST /api/notify/{run_id}` | Run FFmpeg assembly or generate a review token & notification. |
+| `POST /api/retry-upload/{run_id}` | Retry YouTube upload for an already-approved run. |
+| `GET /api/status`, `GET /api/logs` | Fetch JSON system status or recent redacted `logs/automation.log` lines. |
+| `GET /video/{run_id}` | Stream `final_short.mp4` with `Accept-Ranges: bytes` support. |
+| `POST /ready/{run_id}`, `GET /review/{run_id}`, `POST /approve/{run_id}`, `POST /reject/{run_id}` | Token-gated review portal and explicit POST approval/rejection endpoints. |
+
+---
+
+## Configuration
+
+Environment variables (`.env`) configure defaults, credentials, and runtime behavior; studio preferences are persisted in `data/studio_settings.json` and editable from the Web UI:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `GROQ_API_KEY` | `""` | Groq API key (empty triggers `MockLLM`). |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Default Groq model ID. |
+| `GROQ_MAX_TOKENS` | `900` | Base max tokens (auto-adjusted per model family in `app/llm.py`). |
+| `GROQ_TEMPERATURE` | `0.9` | Creative sampling temperature (`0.0–1.5`). |
+| `DEFAULT_LANGUAGE` | `english` | `english`, `telugu`, `hindi`, `tamil`, or `malayalam`. |
+| `STUDIO_NAME` / `DEFAULT_NICHE` | `AI Engineering Shorts Studio` / `AI Engineering` | Initial studio branding and niche defaults. |
+| `TIMEZONE` / `MORNING_CRON` / `EVENING_CRON` | `Asia/Kolkata` / `0 7 * * *` / `30 16 * * *` | Daily schedule timezone and cron expressions. |
+| `ENABLE_EMBEDDED_SCHEDULER` | `false` | Run APScheduler inside the FastAPI lifespan (`true` for single-container cloud hosts). |
+| `DATA_DIR` | `data` | Base directory for packages, exports, final videos, and JSON state files. |
+| `APPROVAL_SECRET_KEY` / `APPROVAL_BASE_URL` | `...` / `http://127.0.0.1:8000` | Signing config and base URL for emailed review links. |
+| `APPROVAL_TOKEN_EXPIRE_HOURS` | `24` | Expiration window for single-use approval tokens. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `APPROVAL_RECIPIENT_EMAIL` | Gmail STARTTLS (`587`) | SMTP email configuration (dry-run mode when omitted). |
+| `YOUTUBE_CLIENT_SECRETS_FILE` / `YOUTUBE_TOKEN_FILE` | `client_secret.json` / `token.json` | Local OAuth file paths (also checks `/etc/secrets/`). |
+| `YOUTUBE_CLIENT_SECRET_JSON` / `YOUTUBE_TOKEN_JSON` | `""` | Raw or base64-encoded OAuth JSON for cloud env vars. |
+| `YOUTUBE_MOCK_MODE` | `false` | Force simulated uploads without calling YouTube API. |
+| `DEFAULT_PRIVACY_STATUS` | `private` | Default YouTube upload visibility (`private`, `unlisted`, or `public`). |
+| `TTS_VOICE` / `FFMPEG_THREADS` | `en-US-ChristopherNeural` / `2` | Default Edge-TTS speaker and FFmpeg thread count. |
+
+---
+
+## Deployment Options
+
+### Docker & Docker Compose
+
+`docker-compose.yml` launches two coordinated containers sharing `./data` and `./logs`:
+- `approval-service`: FastAPI dashboard & review portal on `http://localhost:8000`
+- `scheduler-service`: Dedicated APScheduler worker
+
 ```powershell
 docker compose up --build -d
-```
-- **Approval Portal**: Accessible at `http://localhost:8000`
-- **Scheduler**: Automatically runs daily production at **07:00 AM IST** and **04:30 PM IST**.
-- **Data Persistence**: `./data` and `./logs` on your host are bound directly to `/app/data` and `/app/logs`. Clips you place in `./data/flow_exports/` on your host are instantly available to the container.
-
-### 2. View Live Logs
-```powershell
 docker compose logs -f
-```
-
-### 3. Run Pipeline CLI Commands via Docker
-You can execute any CLI operation directly inside the containerized environment:
-
-- **Generate Content Package**:
-  ```powershell
-  docker compose run --rm approval-service generate --slot morning
-  ```
-
-- **Assemble Google Flow Clips with Containerized FFmpeg**:
-  ```powershell
-  docker compose run --rm approval-service assemble --run-id <run_id>
-  ```
-
-- **Send Review Email**:
-  ```powershell
-  docker compose run --rm approval-service notify --run-id <run_id>
-  ```
-
-- **Check Pipeline Status**:
-  ```powershell
-  docker compose run --rm approval-service status
-  ```
-
-### 4. Stop Services
-```powershell
+# Run one-off CLI commands in the container:
+docker compose run --rm approval-service generate --slot morning
+docker compose run --rm approval-service status
 docker compose down
 ```
 
+### Render
+
+`render.yaml` defines a Docker Web Service (`ai-shorts-automation`) with `ENABLE_EMBEDDED_SCHEDULER=true`, `/health` checks, and `$PORT` auto-binding:
+1. Run `python cli.py youtube-auth` locally to generate `token.json`.
+2. Deploy via Render Blueprint (`render.yaml`) on `main`.
+3. Add `GROQ_API_KEY`, SMTP variables, and either `YOUTUBE_CLIENT_SECRET_JSON` + `YOUTUBE_TOKEN_JSON` or Render Secret Files (`/etc/secrets/client_secret.json` and `/etc/secrets/token.json`).
+4. Optionally attach a Render Persistent Disk at `/var/data` and set `DATA_DIR=/var/data`.
+
+### Modal (Serverless)
+
+`modal_app.py` deploys the FastAPI ASGI app (`web`), a persistent `modal.Volume("youtube-shorts-data")` mounted at `/data` with `_ModalVolumeSyncMiddleware`, and scheduled `modal.Cron` functions (`scheduled_morning` at 07:00 IST and `scheduled_evening` at 16:30 IST):
+1. Create the Modal secret `youtube-shorts-secrets` containing your environment keys (and optional `YOUTUBE_CLIENT_SECRET_JSON` / `YOUTUBE_TOKEN_JSON`).
+2. Deploy with:
+   ```powershell
+   modal deploy modal_app.py
+   ```
+
 ---
 
-## ☁️ Deploying on Render
+## Testing
 
-This repository includes a `render.yaml` Blueprint and a `$PORT`-aware `Dockerfile` ready for Render deployment:
+The test suite runs offline using synthetic FFmpeg test clips and isolated `conftest.py` fixtures (mocking Edge-TTS network calls, SMTP, and YouTube uploads):
 
-1. **YouTube OAuth (One-Time Local Authorization)**:
-   Run `python cli.py youtube-auth` locally with `client_secret.json` in the project root to generate `token.json`.
-2. **Create Web Service on Render**:
-   Push to GitHub and create a **Web Service** (or **New > Blueprint** using `render.yaml`) on Render.
-3. **Configure Environment Variables on Render**:
-   Set `GROQ_API_KEY`, `APPROVAL_SECRET_KEY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SENDER_EMAIL`, `APPROVAL_RECIPIENT_EMAIL`, `ENABLE_EMBEDDED_SCHEDULER=true`, and either set `YOUTUBE_CLIENT_SECRET_JSON` + `YOUTUBE_TOKEN_JSON` or upload `client_secret.json` & `token.json` as Render Secret Files.
-4. **Upload Google Flow Clips via Web UI**:
-   Open your Render dashboard URL, click **Google Flow Prompts Brief**, generate clips in Google Flow, click **Upload Clips** on the run card to upload `scene_01.mp4 .. scene_0N.mp4`, then click **Assemble Video (FFmpeg)** and **Open Review Portal**.
+```powershell
+python -m pytest -v
+```
+
+Coverage spans models (`test_models.py`), storage & ZIP manifests (`test_storage.py`), LangGraph & Groq recovery (`test_graph.py`), FFmpeg assembly & TTS regeneration (`test_assemble.py`), APScheduler (`test_scheduler.py`), FastAPI endpoints & token security (`test_server.py`), YouTube idempotency & clip cleanup (`test_youtube.py`), and ZIP security/preview/confirm/retry workflows (`test_zip_import.py`).
 
 ---
 
-## 🔒 Security & Safe Publishing
+## Security & Operational Guide
 
-1. **Zero Credential Exposure**: API keys, SMTP passwords, and OAuth tokens are loaded strictly via `.env` and `pydantic-settings`. All logs automatically redact secret patterns (`gsk_...`, bearer tokens, passwords).
-2. **Single-Use, Expiring Tokens**: Approval tokens are generated using `secrets.token_urlsafe(32)`, stored strictly as SHA-256 hashes, and invalidated immediately upon first use (`consumed_at_utc`).
-3. **Anti-Scanner Protection**: Enterprise spam and security scanners pre-fetch GET links. In this system, visiting the link renders the preview; upload requires an explicit interactive POST action.
-4. **Duplicate Upload Protection**: Every upload is recorded in `data/upload_ledger.json` with the video's SHA-256 hash. Replays or accidental clicks will never upload duplicate videos.
-5. **Private by Default**: All videos are uploaded with `privacyStatus = "private"`. Public publishing is controlled manually from YouTube Studio after review.
+- **Secret Redaction**: `logs/automation.log` automatically masks Groq API keys (`gsk_...`), inline passwords/tokens/secrets, and bearer tokens.
+- **Git Exclusion**: `.gitignore` excludes `.env`, `client_secret.json`, `token.json`, `logs/`, and generated runtime artifacts.
+- **Daily Operations**: See [OPERATIONAL_RUNBOOK.md](OPERATIONAL_RUNBOOK.md) for daily operator checklists and troubleshooting.
