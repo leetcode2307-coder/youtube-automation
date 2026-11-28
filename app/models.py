@@ -125,8 +125,6 @@ class StudioConfig(BaseModel):
     auto_assemble_on_upload: bool = Field(default=True)
     auto_open_review_on_assemble: bool = Field(default=True)
     send_email_on_ready: bool = Field(default=True)
-    google_pro_email: str = Field(default="hanumamaruthichenji@gmail.com", max_length=160)
-    flow_auto_automate: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _validate_ranges(self) -> "StudioConfig":
@@ -134,29 +132,51 @@ class StudioConfig(BaseModel):
             raise ValueError("min_duration_seconds cannot exceed max_duration_seconds")
         if self.min_scenes > self.max_scenes:
             raise ValueError("min_scenes cannot exceed max_scenes")
-        cleaned_email = (self.google_pro_email or "").strip().lower()
-        if cleaned_email and ("@" not in cleaned_email or "." not in cleaned_email.split("@", 1)[-1]):
-            raise ValueError("google_pro_email must be a valid email address or empty")
-        self.google_pro_email = cleaned_email
         return self
 
 
-FlowJobStatusType = Literal["idle", "queued", "running", "completed", "auth_required", "failed"]
+ZipItemStatus = Literal["valid", "duplicate", "corrupted", "ignored"]
+ZipImportStatus = Literal["preview_ready", "confirmed", "processing", "completed", "failed"]
 
 
-class FlowJobState(BaseModel):
-    """Persistent status record for a background Google Flow Playwright automation job."""
+class ZipImportItem(BaseModel):
+    """Single file discovered inside an uploaded Google Flow project ZIP archive."""
+    member_id: str
+    archive_path: str
+    original_filename: str
+    raw_rel_path: str = ""
+    media_kind: Literal["mp4", "voiceover_mp3", "other"] = "mp4"
+    size_bytes: int = 0
+    sha256: str = ""
+    duration_seconds: float = 0.0
+    width: int = 0
+    height: int = 0
+    detected_scene_number: int = -1
+    assigned_scene_number: Optional[int] = None
+    assigned_filename: Optional[str] = None
+    status: ZipItemStatus = "valid"
+    issue: str = ""
+
+
+class ZipImportRecord(BaseModel):
+    """Persistent preview, mapping, preservation, and retry state for a Flow project ZIP import."""
+    import_id: str
     run_id: str
-    status: FlowJobStatusType = "idle"
-    google_pro_email: str = ""
-    step: str = ""
-    progress_percent: int = Field(default=0, ge=0, le=100)
-    message: str = ""
-    clips_extracted: List[str] = Field(default_factory=list)
-    error: Optional[str] = None
-    started_at_utc: str = ""
+    original_zip_filename: str
+    original_zip_rel_path: str
+    zip_sha256: str = ""
+    zip_size_bytes: int = 0
+    status: ZipImportStatus = "preview_ready"
+    total_entries_inspected: int = 0
+    items: List[ZipImportItem] = Field(default_factory=list)
+    missing_scenes: List[int] = Field(default_factory=list)
+    duplicate_scenes: List[int] = Field(default_factory=list)
+    corrupted_files: List[str] = Field(default_factory=list)
+    ignored_files: List[str] = Field(default_factory=list)
+    confirmed_clips: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+    created_at_utc: str = ""
     updated_at_utc: str = ""
-    finished_at_utc: str = ""
 
 
 class ApprovalRecord(BaseModel):

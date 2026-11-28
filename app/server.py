@@ -6,13 +6,14 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -20,14 +21,13 @@ from pydantic import BaseModel, Field
 from app.assemble import assemble_video
 from app.config import LANGUAGE_PROFILES, normalize_language, settings
 from app.emailer import create_approval_record, send_approval_email
-from app.flow_playwright import (
-    delete_flow_session,
-    get_flow_session_info,
-    normalize_google_email,
-    save_flow_session_state,
-    start_background_flow_automation,
+from app.intake import (
+    ZipImportValidationError,
+    apply_zip_mapping_and_stage_clips,
+    extract_and_normalize_flow_archive,
+    extract_scene_number,
+    inspect_and_stage_zip_import,
 )
-from app.intake import extract_and_normalize_flow_archive, extract_scene_number
 from app.logging_config import logger
 from app.models import ApprovalRecord, LanguageType, PrivacyStatus, SlotType, StudioConfig
 from app.pipeline import run_content_pipeline
@@ -46,16 +46,7 @@ from app.ui_helpers import (
 
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,80}$")
 _ACTIVE_SCHEDULER = None
-_MODAL_COMMIT_HOOK: Optional[Callable[[], None]] = None
 _APP_DIR = Path(__file__).resolve().parent
-
-
-def _trigger_modal_commit() -> None:
-    if _MODAL_COMMIT_HOOK is not None:
-        try:
-            _MODAL_COMMIT_HOOK()
-        except Exception as exc:
-            logger.warning("Modal background volume commit warning: %s", exc)
 
 
 def _compute_static_asset_version() -> str:
@@ -286,7 +277,8 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             counts["failed"] += 1
 
         lang_key = normalize_language(p.language)
-        flow_job = storage.load_flow_job(p.run_id)
+        zip_imports = storage.list_zip_imports(p.run_id)
+        latest_zip = zip_imports[0] if zip_imports else None
         item = {
             "pkg": p,
             "niche": p.niche or studio_cfg.niche,
@@ -304,18 +296,16 @@ def _build_dashboard_context(studio_cfg: StudioConfig) -> dict:
             "video_exists": video_exists,
             "is_published": is_published,
             "filter_groups": ",".join(groups),
-            "flow_job": flow_job.model_dump() if flow_job else None,
+            "zip_import": latest_zip.model_dump() if latest_zip else None,
+            "zip_archive_count": len(zip_imports),
         }
         run_items.append(item)
 
         if p.status in ("awaiting_approval", "awaiting_flow_export", "failed", "approved"):
             attention_runs.append(item)
 
-    flow_session = get_flow_session_info(studio_cfg.google_pro_email)
-
     return {
         "studio_cfg": studio_cfg,
-        "flow_session": flow_session,
         "run_items": run_items,
         "attention_runs": attention_runs,
         "ledger_rows": ledger_rows,
@@ -419,8 +409,6 @@ class GenerateRequestPayload(BaseModel):
     style_examples: Optional[str] = Field(default=None, max_length=3000)
     remember_style: bool = False
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.5)
-    auto_run_flow: Optional[bool] = None
-    google_pro_email: Optional[str] = Field(default=None, max_length=160)
 
 
 @app.post("/api/generate")
@@ -433,7 +421,6 @@ def api_generate_run(
     style_examples: Optional[str] = Query(None),
     remember_style: bool = Query(False),
     temperature: Optional[float] = Query(None, ge=0.0, le=1.5),
-    auto_run_flow: bool = Query(False),
     payload: Optional[GenerateRequestPayload] = Body(default=None),
 ):
     """Trigger content pipeline via UI with optional niche/topic/language/style-memory override."""
@@ -445,12 +432,6 @@ def api_generate_run(
     eff_style = payload.style_examples if payload and payload.style_examples is not None else style_examples
     eff_remember = payload.remember_style if payload else remember_style
     eff_temp = payload.temperature if payload and payload.temperature is not None else temperature
-    eff_auto_flow = (
-        payload.auto_run_flow
-        if payload and payload.auto_run_flow is not None
-        else auto_run_flow
-    )
-    eff_email = payload.google_pro_email if payload and payload.google_pro_email is not None else None
     try:
         pkg = run_content_pipeline(
             slot=eff_slot,
@@ -462,14 +443,6 @@ def api_generate_run(
             remember_style=eff_remember,
             temperature_override=eff_temp,
         )
-        flow_job_status = None
-        if eff_auto_flow:
-            job = start_background_flow_automation(
-                pkg.run_id,
-                google_pro_email=eff_email,
-                on_complete_sync=_trigger_modal_commit,
-            )
-            flow_job_status = job.status
         return {
             "status": "success",
             "run_id": pkg.run_id,
@@ -479,7 +452,6 @@ def api_generate_run(
             "title": pkg.metadata.title,
             "duration": pkg.total_duration_seconds,
             "style_examples_used": bool(pkg.style_examples_used),
-            "flow_job_status": flow_job_status,
         }
     except Exception as e:
         logger.error("UI generation failed: %s", e)
@@ -553,6 +525,9 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
             if is_zip:
                 if total_bytes < 22:
                     raise HTTPException(status_code=400, detail=f"ZIP file '{raw_name}' is empty or invalid.")
+                archive_preserve_dir = run_export_dir / "imports" / "direct_uploads"
+                archive_preserve_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, archive_preserve_dir / f"{secrets.token_hex(4)}_{raw_name}")
                 try:
                     extracted = extract_and_normalize_flow_archive(
                         tmp_path,
@@ -565,6 +540,9 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
             else:
                 if total_bytes < 1024:
                     raise HTTPException(status_code=400, detail=f"File '{raw_name}' is too small or empty.")
+                archive_preserve_dir = run_export_dir / "imports" / "direct_uploads"
+                archive_preserve_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, archive_preserve_dir / f"{secrets.token_hex(4)}_{raw_name}")
                 target_path = run_export_dir / normalized_name
                 os.replace(tmp_path, target_path)
                 if normalized_name == "voiceover.mp3":
@@ -593,137 +571,247 @@ async def api_upload_clips(run_id: str, files: List[UploadFile] = File(...)):
 
 
 # =====================================================================
-# Google Flow Playwright Session & Automation APIs
+# Google Flow Project ZIP Preview, Mapping Confirmation & Retry APIs
 # =====================================================================
 
-class FlowSessionUploadPayload(BaseModel):
-    email: str = Field(min_length=3, max_length=160)
-    storage_state: dict
+class ZipConfirmPayload(BaseModel):
+    import_id: str = Field(min_length=3, max_length=100)
+    mappings: Optional[Dict[str, Optional[int]]] = None
+    allow_partial: bool = False
+    process_video: bool = True
 
 
-class FlowAutomatePayload(BaseModel):
-    google_pro_email: Optional[str] = Field(default=None, max_length=160)
-    flow_url: Optional[str] = Field(default=None, max_length=300)
-    auto_assemble: Optional[bool] = None
+class ZipRetryPayload(BaseModel):
+    import_id: Optional[str] = Field(default=None, max_length=100)
+    mappings: Optional[Dict[str, Optional[int]]] = None
+    allow_partial: bool = False
+    process_video: bool = True
 
 
-@app.get("/api/flow-session")
-def api_get_flow_session(email: Optional[str] = Query(None)):
-    """Check whether a Playwright browser session is saved for the Google Pro email (secret-free)."""
-    resolved = normalize_google_email(email)
-    return get_flow_session_info(resolved)
-
-
-@app.post("/api/flow-session/upload")
-async def api_upload_flow_session(
-    request: Request,
-    email: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
-):
-    """Save Playwright storage_state.json for a Google Pro account via multipart upload or JSON body."""
-    resolved_email = email
-    state_obj = None
-
-    if file is not None:
-        raw_bytes = await file.read()
-        await file.close()
-        if len(raw_bytes) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Session JSON exceeds 5 MB limit.")
-        try:
-            state_obj = json.loads(raw_bytes.decode("utf-8"))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON in uploaded session file: {exc}") from exc
-    else:
-        try:
-            body = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Provide multipart file or JSON payload with storage_state.") from exc
-        parsed = FlowSessionUploadPayload.model_validate(body)
-        resolved_email = parsed.email
-        state_obj = parsed.storage_state
-
-    try:
-        info = save_flow_session_state(normalize_google_email(resolved_email), state_obj)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "success", **info}
-
-
-@app.delete("/api/flow-session")
-def api_delete_flow_session(email: Optional[str] = Query(None)):
-    """Remove saved Playwright session for a Google Pro account."""
-    resolved = normalize_google_email(email)
-    removed = delete_flow_session(resolved)
-    return {"status": "success", "email": resolved, "removed": removed}
-
-
-@app.post("/api/flow-automate/{run_id}")
-def api_start_flow_automate(
+def _run_confirmed_zip_processing(
     run_id: str,
-    google_pro_email: Optional[str] = Query(None),
-    flow_url: Optional[str] = Query(None),
-    auto_assemble: Optional[bool] = Query(None),
-    payload: Optional[FlowAutomatePayload] = Body(default=None),
-):
-    """Queue asynchronous Playwright automation to submit prompts to Google Flow and import clips."""
-    _validate_run_id(run_id)
-    pkg = storage.load_package(run_id)
-    if not pkg:
-        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
-
-    eff_email = payload.google_pro_email if payload and payload.google_pro_email is not None else google_pro_email
-    eff_url = payload.flow_url if payload and payload.flow_url is not None else flow_url
-    eff_assemble = payload.auto_assemble if payload and payload.auto_assemble is not None else auto_assemble
-
-    job = start_background_flow_automation(
+    import_id: str,
+    pkg: Any,
+    request: Optional[Request],
+    *,
+    mappings: Optional[Dict[str, Optional[int]]] = None,
+    allow_partial: bool = False,
+    process_video: bool = True,
+) -> Dict[str, Any]:
+    """Stage confirmed ZIP clips non-destructively and optionally run voiceover + captions + FFmpeg assembly."""
+    record = apply_zip_mapping_and_stage_clips(
         run_id,
-        google_pro_email=eff_email,
-        flow_url=eff_url,
-        auto_assemble=eff_assemble,
-        on_complete_sync=_trigger_modal_commit,
+        import_id,
+        pkg,
+        mappings=mappings,
+        allow_partial=allow_partial,
     )
-    return JSONResponse(status_code=202, content=job.model_dump())
-
-
-@app.get("/api/flow-automate/{run_id}")
-def api_get_flow_automate_status(run_id: str):
-    """Return live progress for a Google Flow Playwright automation job along with clip readiness."""
-    _validate_run_id(run_id)
-    pkg = storage.load_package(run_id)
-    if not pkg:
-        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
-
-    job = storage.load_flow_job(run_id)
     run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
-    mp4_files = (
-        sorted(f.name for f in run_export_dir.glob("*.mp4") if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024)
-        if run_export_dir.exists()
-        else []
+    mp4_files = sorted(
+        f.name for f in run_export_dir.glob("*.mp4") if extract_scene_number(f.name) > 0 and f.stat().st_size >= 1024
     )
-    found_numbers = {extract_scene_number(f) for f in mp4_files}
-    missing_scenes = [s.scene_number for s in pkg.scenes if s.scene_number not in found_numbers]
-    video_exists = (settings.FINAL_OUTPUT_DIR / run_id / "final_short.mp4").exists()
 
-    debug_shot = settings.FLOW_JOBS_DIR / f"{run_id}_debug.png"
+    review_url = ""
+    assembled = False
+    if process_video and not record.missing_scenes:
+        record.status = "processing"
+        record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+        storage.save_zip_import(record)
+        try:
+            assemble_video(run_id)
+            assembled = True
+            studio_cfg = storage.get_studio_config()
+            raw_token, _ = create_approval_record(run_id)
+            latest_pkg = storage.load_package(run_id) or pkg
+            if studio_cfg.send_email_on_ready:
+                send_approval_email(latest_pkg, raw_token)
+            storage.update_package_status(run_id, "awaiting_approval")
+            base_url = _resolve_base_url(request) if request is not None else ""
+            review_url = f"{base_url}/review/{run_id}?token={raw_token}" if base_url else f"/review/{run_id}?token={raw_token}"
+            record.status = "completed"
+            record.error_message = None
+            record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+            storage.save_zip_import(record)
+        except Exception as exc:
+            record.status = "failed"
+            record.error_message = str(exc)
+            record.updated_at_utc = datetime.now(timezone.utc).isoformat()
+            storage.save_zip_import(record)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video processing failed (original ZIP and clips preserved for retry): {exc}",
+            ) from exc
+
     return {
-        "job": job.model_dump() if job else {"run_id": run_id, "status": "idle", "progress_percent": 0, "message": ""},
+        "status": "success",
+        "run_id": run_id,
+        "import_record": record.model_dump(),
         "clips": mp4_files,
-        "missing_scenes": missing_scenes,
-        "has_custom_voiceover": (run_export_dir / "voiceover.mp3").exists(),
-        "package_status": pkg.status,
-        "video_exists": video_exists,
-        "debug_screenshot_url": f"/api/flow-automate/{run_id}/screenshot" if debug_shot.exists() else "",
+        "missing_scenes": record.missing_scenes,
+        "assembled": assembled,
+        "review_url": review_url,
     }
 
 
-@app.get("/api/flow-automate/{run_id}/screenshot")
-def api_get_flow_debug_screenshot(run_id: str):
-    """Serve diagnostic screenshot from the most recent failed Playwright run."""
+@app.post("/api/zip-import/{run_id}/inspect")
+async def api_inspect_zip_import(run_id: str, file: UploadFile = File(...)):
+    """Upload a Google Flow project .zip, preserve original archive, inspect & preview clip mapping."""
     _validate_run_id(run_id)
-    shot_path = settings.FLOW_JOBS_DIR / f"{run_id}_debug.png"
-    if not shot_path.exists():
-        raise HTTPException(status_code=404, detail="Debug screenshot not found for this run.")
-    return FileResponse(path=str(shot_path), media_type="image/png", headers={"Cache-Control": "no-store"})
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    raw_name = Path(file.filename or "flow_export.zip").name
+    if not raw_name.lower().endswith(".zip"):
+        await file.close()
+        raise HTTPException(status_code=400, detail=f"Expected a .zip archive, received '{raw_name}'.")
+
+    run_export_dir = settings.FLOW_EXPORTS_DIR / run_id
+    run_export_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = run_export_dir / f".upload.{secrets.token_hex(6)}.zip"
+    max_upload_bytes = 500 * 1024 * 1024
+    total_bytes = 0
+
+    try:
+        with open(tmp_path, "wb") as dst:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > max_upload_bytes:
+                    raise HTTPException(status_code=400, detail="ZIP archive exceeds 500 MB upload limit.")
+        if total_bytes < 22:
+            raise HTTPException(status_code=400, detail=f"ZIP archive '{raw_name}' is empty or invalid.")
+
+        try:
+            record = inspect_and_stage_zip_import(
+                run_id,
+                tmp_path,
+                raw_name,
+                pkg,
+            )
+        except ZipImportValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    return {
+        "status": "success",
+        "run_id": run_id,
+        "import_record": record.model_dump(),
+        "expected_scenes": [
+            {"scene_number": s.scene_number, "export_filename": s.export_filename, "duration_seconds": s.duration_seconds}
+            for s in pkg.scenes
+        ],
+    }
+
+
+@app.get("/api/zip-import/{run_id}")
+def api_get_zip_import_status(run_id: str):
+    """Return persisted ZIP import preview/history for a run."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    records = storage.list_zip_imports(run_id)
+    return {
+        "run_id": run_id,
+        "latest": records[0].model_dump() if records else None,
+        "imports": [r.model_dump() for r in records],
+    }
+
+
+@app.post("/api/zip-import/{run_id}/confirm")
+def api_confirm_zip_import(run_id: str, payload: ZipConfirmPayload, request: Request):
+    """Confirm previewed clip-to-scene mapping and trigger voiceover, subtitles, and FFmpeg assembly."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    try:
+        return _run_confirmed_zip_processing(
+            run_id,
+            payload.import_id,
+            pkg,
+            request,
+            mappings=payload.mappings,
+            allow_partial=payload.allow_partial,
+            process_video=payload.process_video,
+        )
+    except ZipImportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/zip-import/{run_id}/retry")
+def api_retry_zip_import(
+    run_id: str,
+    request: Request,
+    payload: Optional[ZipRetryPayload] = Body(default=None),
+):
+    """Retry a previously preserved ZIP import or failed FFmpeg assembly without re-uploading."""
+    _validate_run_id(run_id)
+    pkg = storage.load_package(run_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail=f"Package {run_id} not found.")
+
+    target_rec = (
+        storage.load_zip_import(run_id, payload.import_id)
+        if payload and payload.import_id
+        else storage.get_latest_zip_import(run_id)
+    )
+    if not target_rec:
+        raise HTTPException(status_code=404, detail=f"No preserved ZIP import found to retry for '{run_id}'.")
+
+    preserved_zip = settings.FLOW_EXPORTS_DIR / run_id / target_rec.original_zip_rel_path
+    if not preserved_zip.exists():
+        raise HTTPException(status_code=404, detail="Preserved original ZIP archive was not found.")
+
+    # If earlier inspection failed or raw files are absent, re-inspect preserved ZIP first
+    if not target_rec.items or target_rec.status == "failed" and not target_rec.confirmed_clips:
+        try:
+            refreshed = inspect_and_stage_zip_import(
+                run_id,
+                preserved_zip,
+                target_rec.original_zip_filename,
+                pkg,
+                import_id=target_rec.import_id,
+            )
+        except ZipImportValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if payload and payload.process_video and not refreshed.missing_scenes and not refreshed.duplicate_scenes:
+            return _run_confirmed_zip_processing(
+                run_id,
+                refreshed.import_id,
+                pkg,
+                request,
+                mappings=payload.mappings,
+                allow_partial=payload.allow_partial,
+                process_video=True,
+            )
+        return {
+            "status": "preview_ready",
+            "run_id": run_id,
+            "import_record": refreshed.model_dump(),
+        }
+
+    try:
+        return _run_confirmed_zip_processing(
+            run_id,
+            target_rec.import_id,
+            pkg,
+            request,
+            mappings=payload.mappings if payload else None,
+            allow_partial=payload.allow_partial if payload else False,
+            process_video=payload.process_video if payload else True,
+        )
+    except ZipImportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/clips/{run_id}")

@@ -221,31 +221,12 @@ def get_system_health(studio_cfg: StudioConfig, active_scheduler: Any = None) ->
     else:
         yt_state, yt_tone, yt_detail = "Dry-run mode", "info", "No YouTube credentials configured; approvals simulate uploads safely."
 
-    from app.flow_playwright import get_flow_session_info
-
-    flow_info = get_flow_session_info(studio_cfg.google_pro_email)
-    flow_email = flow_info.get("email") or "Not configured"
-    flow_has_file = bool(flow_info.get("has_session"))
-    flow_valid = flow_has_file and bool(flow_info.get("has_auth_cookie"))
-    if flow_valid:
-        flow_status, flow_tone = "Session Ready", "success"
-        flow_detail = f"Account: {flow_email} ({flow_info.get('cookie_count', 0)} cookies synced)."
-    elif flow_has_file:
-        flow_status, flow_tone = "Incomplete Session", "amber"
-        flow_detail = (
-            f"Account: {flow_email} only has {flow_info.get('cookie_count', 0)} anonymous cookie(s). "
-            f"Re-run 'python -m app.flow_login --email {flow_email}' until Flow Studio opens."
-        )
-    else:
-        flow_status, flow_tone = "Session Needed", "amber"
-        flow_detail = f"Account: {flow_email}. Upload storage_state.json or run 'python -m app.flow_login --email {flow_email}'."
-
     return [
         {
-            "name": "Google Flow Playwright Bot",
-            "status": flow_status,
-            "tone": flow_tone,
-            "detail": flow_detail,
+            "name": "Google Flow Workflow",
+            "status": "ZIP Import Ready",
+            "tone": "success",
+            "detail": "Manual Google Flow in your normal Chrome browser -> import project ZIP with preview & scene mapping.",
         },
         {
             "name": "AI Script Writer (Groq)",
