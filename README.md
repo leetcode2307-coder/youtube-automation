@@ -246,11 +246,84 @@ docker compose down
 
 ### Modal (Serverless)
 
-`modal_app.py` deploys the FastAPI ASGI app (`web`), a persistent `modal.Volume("youtube-shorts-data")` mounted at `/data` with `_ModalVolumeSyncMiddleware`, and scheduled `modal.Cron` functions (`scheduled_morning` at 07:00 IST and `scheduled_evening` at 16:30 IST):
-1. Create the Modal secret `youtube-shorts-secrets` containing your environment keys (and optional `YOUTUBE_CLIENT_SECRET_JSON` / `YOUTUBE_TOKEN_JSON`).
-2. Deploy with:
+[`modal_app.py`](modal_app.py) deploys:
+- `web`: FastAPI ASGI dashboard & review portal (`@modal.asgi_app()`, `cpu=2.0`, `memory=2048`, `max_containers=1`, `timeout=600`, `routing_region="ap-south"`, `@modal.concurrent(max_inputs=50)`).
+- `youtube-shorts-data`: Persistent `modal.Volume` (created automatically if missing and mounted at `/data`), coordinated by `_ModalVolumeSyncMiddleware` around reads, mutations, and video streaming.
+- `scheduled_morning` & `scheduled_evening`: Scheduled `modal.Cron` functions running daily at `0 7 * * *` and `30 16 * * *` in `Asia/Kolkata`.
+
+#### Step-by-Step Modal Deployment
+
+1. **Install the Modal CLI and authenticate** *(skip `pip install modal` if using the repo `.venv`, where `modal` is already installed)*:
+   ```powershell
+   pip install modal
+   modal setup
+   ```
+
+2. *(Optional)* **Generate YouTube OAuth credentials locally** if you want real YouTube uploads from Modal:
+   ```powershell
+   python cli.py youtube-auth
+   ```
+   This creates `token.json` from `client_secret.json`. For serverless Modal containers, pass their JSON contents via `YOUTUBE_CLIENT_SECRET_JSON` and `YOUTUBE_TOKEN_JSON` in the secret below (refreshed tokens automatically persist to `/data/youtube_token.json` on the volume).
+
+3. **Create the required Modal secret (`youtube-shorts-secrets`)**:
+   Create the secret explicitly (recommended) so local `.env` storage paths do not override Modal's `DATA_DIR=/data` mount:
+   ```powershell
+   modal secret create youtube-shorts-secrets `
+     DATA_DIR=/data `
+     GROQ_API_KEY=gsk_your_groq_api_key `
+     APPROVAL_SECRET_KEY=your_random_32_byte_secret `
+     SMTP_HOST=smtp.gmail.com `
+     SMTP_PORT=587 `
+     SMTP_USE_TLS=true `
+     SMTP_USERNAME=your_email@gmail.com `
+     SMTP_PASSWORD=your_gmail_app_password `
+     SENDER_EMAIL=your_email@gmail.com `
+     APPROVAL_RECIPIENT_EMAIL=your_email@gmail.com
+   ```
+   *(If you use `modal secret create youtube-shorts-secrets --from-dotenv .env`, remove local `DATA_DIR=data`, `PACKAGES_DIR=...`, `FLOW_EXPORTS_DIR=...`, `FINAL_OUTPUT_DIR=...`, `TOPIC_HISTORY_FILE=...`, `UPLOAD_LEDGER_FILE=...`, `APPROVALS_FILE=...`, and `STUDIO_SETTINGS_FILE=...` overrides so all files persist on `/data`.)*
+
+   To include YouTube OAuth credentials from local `client_secret.json` and `token.json` without shell quote escaping issues, base64-encode them (`app/youtube.py` accepts either raw JSON or base64):
+   ```powershell
+   $cs = [Convert]::ToBase64String([IO.File]::ReadAllBytes("client_secret.json"))
+   $tk = [Convert]::ToBase64String([IO.File]::ReadAllBytes("token.json"))
+   modal secret create youtube-shorts-secrets --force `
+     DATA_DIR=/data `
+     GROQ_API_KEY=gsk_your_groq_api_key `
+     APPROVAL_SECRET_KEY=your_random_32_byte_secret `
+     YOUTUBE_CLIENT_SECRET_JSON=$cs `
+     YOUTUBE_TOKEN_JSON=$tk
+   ```
+   *(Include your SMTP keys in the same command, or manage all keys in the Modal Dashboard under **Secrets → `youtube-shorts-secrets`**.)*
+
+4. *(Optional)* **Test ephemerally before deploying**:
+   ```powershell
+   modal serve modal_app.py
+   ```
+
+5. **Deploy to Modal**:
    ```powershell
    modal deploy modal_app.py
+   ```
+   Modal prints your public HTTPS web endpoint (e.g., `https://<workspace>--ai-shorts-automation-web.modal.run`).
+
+6. **Set `APPROVAL_BASE_URL` to your deployed Modal URL** *(required if email notifications are enabled so emailed review links do not point to `127.0.0.1:8000`)*:
+   Update `youtube-shorts-secrets` in the Modal Dashboard (or re-run `modal secret create youtube-shorts-secrets --force ...` with `APPROVAL_BASE_URL=https://<workspace>--ai-shorts-automation-web.modal.run`), then roll over or redeploy:
+   ```powershell
+   modal deploy modal_app.py
+   ```
+
+7. **Common Modal Operations & Debugging**:
+   ```powershell
+   # Manually trigger a scheduled generation job on Modal
+   modal run modal_app.py::scheduled_morning
+   modal run modal_app.py::scheduled_evening
+
+   # Stream live logs or inspect persistent volume contents
+   modal app logs ai-shorts-automation
+   modal volume ls youtube-shorts-data
+
+   # Stop the deployed Modal app
+   modal app stop ai-shorts-automation
    ```
 
 ---
